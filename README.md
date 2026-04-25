@@ -32,6 +32,11 @@ pip install -r requirements.txt
 
 The virtual environment is intentionally ignored by git and should not be committed.
 
+For the Tier-2 GRU/CNN experiments, Colab with a GPU is recommended if local CPU
+training or installing PyTorch is slow. See `COLAB.md` or
+`notebooks/08_colab_deep_learning_runner.ipynb`. If you are using the VS Code
+Colab extension, see `VSCODE_COLAB_WORKFLOW.md`.
+
 ## Notebook Workflow
 
 Run the notebooks in order:

@@ -7,3 +7,4 @@ tqdm
 pyarrow
 ipykernel
 jupyterlab
+torch
