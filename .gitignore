@@ -5,6 +5,21 @@ __pycache__/
 # Jupyter checkpoints
 .ipynb_checkpoints/
 
+# Local/full datasets and heavy generated artifacts
+dataset/
+artifacts/
+models/
+checkpoints/
+data/processed/*_daily_features.*
+data/processed/patient_static_features.*
+data/processed/questionnaire_event_samples_*.parquet
+data/processed/sensor_features_*.parquet
+*.pt
+*.pth
+*.ckpt
+*.joblib
+*.pkl
+
 # Virtual environments
 .venv/
 venv/

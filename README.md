@@ -51,6 +51,42 @@ Run the notebooks in order:
 
 Notebook 07 is currently present as a placeholder for the Tier-2 deep learning work.
 
+## Corrected Event-Episode Labeling Pipeline
+
+The original `target_binary` workflow is kept as a baseline. The main corrected
+workflow now uses questionnaire-only labels and sensor-only prediction features:
+
+```text
+weekly + daily questionnaires -> event weeks/days/episodes
+smartwatch + smart inhaler + peak flow + environment + patient info -> features
+pre-onset feature windows -> patient-safe model training
+```
+
+Run the corrected pipeline locally:
+
+```powershell
+python scripts\run_questionnaire_event_pipeline.py --thresholds 3 --input-lengths 7 --washouts 7
+```
+
+Run the full label/sample sensitivity grid without rebuilding all sensor
+features:
+
+```powershell
+python scripts\run_questionnaire_event_pipeline.py --skip-features
+```
+
+Useful environment variables:
+
+```text
+AAMOS_DATA_DIR      # folder containing the full AAMOS CSV files
+AAMOS_OUTPUT_DIR    # output root for tables/figures/logs
+AAMOS_PROCESSED_DIR # optional generated feature/sample table folder
+```
+
+The corrected labels never use smartwatch, smart inhaler device counts, peak
+flow, or environment variables. Those sources are used only as prediction
+features before event onset.
+
 ## Data and Outputs
 
 The repository currently includes the raw, interim, processed, and output files needed to reproduce the current project state. Generated Python caches, notebook checkpoints, virtual environments, local environment files, and editor settings are excluded through `.gitignore`.

@@ -53,6 +53,46 @@ Run the full notebook smoke pipeline, then the Tier-2 reproduction:
 !python -m src.deep_learning --epochs 20 --batch-size 64 --patience 5
 ```
 
+## Corrected Event-Episode Pipeline
+
+For the corrected questionnaire-only labeling strategy, put the full AAMOS CSV
+folder in Google Drive, then point the project at it:
+
+```python
+from google.colab import drive
+drive.mount("/content/drive")
+```
+
+Example environment setup:
+
+```python
+import os
+os.environ["AAMOS_DATA_DIR"] = "/content/drive/MyDrive/AAMOS/dataset"
+os.environ["AAMOS_OUTPUT_DIR"] = "/content/drive/MyDrive/AAMOS/outputs"
+```
+
+Run the corrected label/sample sensitivity grid:
+
+```python
+!python scripts/run_questionnaire_event_pipeline.py --skip-features
+```
+
+Run a full sensor-feature + tabular-model smoke experiment:
+
+```python
+!python scripts/run_questionnaire_event_pipeline.py --thresholds 3 --input-lengths 7 --washouts 7
+```
+
+Run more combinations when the smoke run is clean:
+
+```python
+!python scripts/run_questionnaire_event_pipeline.py --train-all
+```
+
+The corrected pipeline uses questionnaires to create labels and uses
+smartwatch, smart inhaler, peak-flow, environment, and patient-info data only as
+prediction features before event onset.
+
 The script writes:
 
 - `outputs/tables/deep_learning_reproduced_results.csv`
