@@ -12,7 +12,7 @@
 # of May 2026.  Bumping any of them invalidates reproducibility of the
 # headline numbers — re-run the full pipeline (notebooks/00_colab_full_pipeline.ipynb)
 # if you change a pin.
-numpy==1.26.4
+numpy==2.0.2
 pandas==2.2.2
 scikit-learn==1.5.1
 xgboost==2.1.0

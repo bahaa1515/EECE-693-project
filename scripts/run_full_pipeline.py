@@ -30,7 +30,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import pandas as pd
 
 from src.config import DATA_PROCESSED, OUTPUT_TABLES
-from src.event_labels import run_event_labeling, run_window_event_labeling
+from src.event_labels import run_event_labeling
+from src.labels import run_labeling
 
 
 def step(idx: int, total: int, msg: str) -> None:
@@ -48,9 +49,13 @@ def run_pipeline(full: bool = False) -> int:
     n_steps = 6
     t0 = time.time()
 
-    step(1, n_steps, "Regenerate event-onset labels")
+    step(1, n_steps, "Regenerate canonical (weekly-questionnaire) labels")
+    # Canonical task: weekly-questionnaire OR-of-flags target (30% positive
+    # rate, matches the progress-report task).  Event-onset labelling is run
+    # too so the ablation parquet is up to date, but does NOT overwrite the
+    # canonical labelled parquet.
     run_event_labeling()
-    labeled = run_window_event_labeling()
+    labeled = run_labeling()
     pos_rate = float(labeled["target_binary"].mean())
     print(f"  rows={len(labeled)}  users={labeled['user_key'].nunique()}  pos_rate={pos_rate:.3f}")
 

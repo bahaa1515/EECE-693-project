@@ -612,18 +612,20 @@ def label_windows_with_event_onset(
 def run_window_event_labeling(
     features_path: Path = DATA_PROCESSED / "baseline_smartwatch_features.parquet",
     probable_event_days_path: Path | None = None,
-    parquet_path: Path = DATA_PROCESSED / "baseline_smartwatch_features_labeled.parquet",
-    csv_path: Path = DATA_PROCESSED / "baseline_smartwatch_features_labeled.csv",
-    summary_path: Path = OUTPUT_TABLES / "label_distribution_summary.csv",
+    parquet_path: Path = DATA_PROCESSED / "baseline_smartwatch_features_labeled_event_onset.parquet",
+    csv_path: Path = DATA_PROCESSED / "baseline_smartwatch_features_labeled_event_onset.csv",
+    summary_path: Path = OUTPUT_TABLES / "label_distribution_summary_event_onset.csv",
     threshold: int = WINDOW_LABEL_THRESHOLD,
     horizon_days: int = WINDOW_LABEL_HORIZON_DAYS,
 ) -> pd.DataFrame:
-    """Generate the canonical labelled-features parquet from event-onset labels.
+    """Generate the ABLATION labelled-features parquet using event-onset labels.
 
-    This replaces ``src.labels.run_labeling`` as the source of
-    ``baseline_smartwatch_features_labeled.parquet`` for all downstream
-    Tier-1/2/3 models.  The previous weekly-symptom labelling pipeline is
-    retained in ``src/labels.py`` for ablation comparison only.
+    The canonical labelled parquet consumed by Tier-1/2/3 is produced by
+    ``src.labels.run_labeling`` (weekly-questionnaire OR-of-flags). This
+    event-onset variant — daily-worsening-score >= threshold within the next
+    ``horizon_days`` — is retained for ablation experiments only and writes
+    to ``baseline_smartwatch_features_labeled_event_onset.*`` so it does not
+    overwrite the canonical file.
     """
     if probable_event_days_path is None:
         probable_event_days_path = (

@@ -140,14 +140,13 @@ def label_summary(labeled: pd.DataFrame) -> pd.DataFrame:
 def run_labeling(
     features_path: Path = DATA_PROCESSED / "baseline_smartwatch_features.parquet",
     weekly_path: Path = DATA_RAW / "anonym_aamos00_weeklyquestionnaire.csv",
-    # NOTE: this legacy weekly-symptom labelling pipeline is kept ONLY for
-    # ablation / leakage-probe comparison.  The canonical labelled parquet
-    # consumed by Tier-1/2/3 (`baseline_smartwatch_features_labeled.parquet`)
-    # is now produced by `src.event_labels.run_window_event_labeling`.  We
-    # write to a separate filename here to avoid silently overwriting it.
-    parquet_path: Path = DATA_PROCESSED / "baseline_smartwatch_features_labeled_weekly.parquet",
-    csv_path: Path = DATA_PROCESSED / "baseline_smartwatch_features_labeled_weekly.csv",
-    summary_path: Path = OUTPUT_TABLES / "label_distribution_summary_weekly.csv",
+    # Canonical labelled parquet for Tier-1 / Tier-2 / Tier-3.  Matches the
+    # task described in the progress report: predict whether the NEXT weekly
+    # questionnaire within 7 days reports any of doc / hospital / ER / oral /
+    # symptom-cluster flag (i.e. OR-of-flags weekly questionnaire target).
+    parquet_path: Path = DATA_PROCESSED / "baseline_smartwatch_features_labeled.parquet",
+    csv_path: Path = DATA_PROCESSED / "baseline_smartwatch_features_labeled.csv",
+    summary_path: Path = OUTPUT_TABLES / "label_distribution_summary.csv",
 ) -> pd.DataFrame:
     weekly = prepare_weekly_flags(load_weekly_questionnaire(weekly_path))
     labeled = label_feature_windows(pd.read_parquet(features_path), weekly)
