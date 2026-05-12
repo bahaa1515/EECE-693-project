@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .config import AAMOS_DAILY_FILE, AAMOS_WEEKLY_FILE, OUTPUT_TABLES
+from .config import AAMOS_DAILY_FILE, AAMOS_WEEKLY_FILE, DATA_PROCESSED, OUTPUT_TABLES
 
 
 USER_COL = "user_key"
@@ -475,6 +475,182 @@ def run_event_labeling(
     artifacts = build_label_artifacts(weekly_path, daily_path, thresholds)
     write_label_artifacts(artifacts, output_dir)
     return artifacts
+
+
+# ─── Window-level event-onset labels (canonical target for Tier-1/2/3) ──────
+#
+# A 24-hour smartwatch window is labelled positive iff a probable event day
+# (from `probable_event_days_threshold_{T}.csv`) falls strictly *after* the
+# window ends and within a `horizon_days`-day horizon.  This is a forward
+# prediction task — the label depends only on future days, never on signal
+# inside the window — so it cannot trivially leak into smartwatch features.
+#
+# Window time convention (matches `src/features.py`):
+#   anchor_relative_minute  = end of the 24-h window, in minutes since study start.
+#   end_day                 = anchor_relative_minute // 1440 - 1
+#                             (the last calendar day *fully* covered by the window)
+# We use `end_day + 1 .. end_day + horizon_days` as the prediction horizon.
+
+
+WINDOW_LABEL_HORIZON_DAYS = 7
+WINDOW_LABEL_THRESHOLD = 3
+
+
+def label_windows_with_event_onset(
+    features_df: pd.DataFrame,
+    probable_event_days: pd.DataFrame,
+    horizon_days: int = WINDOW_LABEL_HORIZON_DAYS,
+    window_minutes: int = 1440,
+) -> pd.DataFrame:
+    """Attach a forward-looking event-onset label to each feature window.
+
+    Parameters
+    ----------
+    features_df
+        Output of `src.features` — must contain `user_key` and
+        `anchor_relative_minute`.
+    probable_event_days
+        DataFrame from `build_probable_event_days` (one row per probable
+        event day per user).  Must have columns ``user_key`` and ``date``
+        (or ``event_day``).
+    horizon_days
+        Prediction horizon length in days (default 7 — matches the previous
+        weekly-questionnaire labelling horizon).
+    window_minutes
+        Window length (default 1440 = 24h).
+
+    Returns
+    -------
+    DataFrame with the same rows as ``features_df`` plus columns
+    ``target_binary``, ``time_to_event_days`` (NaN if negative window),
+    ``horizon_days``, ``label_strategy``.  Only windows whose entire
+    horizon lies inside the study period for that user are kept; the
+    others are dropped (you cannot label them without future data).
+    """
+    if "user_key" not in features_df.columns or "anchor_relative_minute" not in features_df.columns:
+        raise KeyError("features_df must contain 'user_key' and 'anchor_relative_minute'")
+
+    if probable_event_days.empty:
+        out = features_df.copy()
+        out["target_binary"] = 0
+        out["time_to_event_days"] = np.nan
+        out["horizon_days"] = horizon_days
+        out["label_strategy"] = f"event_onset_h{horizon_days}_t{WINDOW_LABEL_THRESHOLD}"
+        return out
+
+    ev = probable_event_days.copy()
+    # Tolerate either 'event_day' or 'date' as the day column.
+    if "event_day" in ev.columns:
+        ev = ev.rename(columns={"event_day": DATE_COL})
+    if DATE_COL not in ev.columns:
+        raise KeyError("probable_event_days must contain 'event_day' or 'date'")
+    ev[USER_COL] = ev[USER_COL].astype(int)
+    ev[DATE_COL] = ev[DATE_COL].astype(int)
+    ev = ev[[USER_COL, DATE_COL]].drop_duplicates()
+
+    feats = features_df.copy()
+    feats[USER_COL] = feats[USER_COL].astype(int)
+    feats["end_day"] = (feats["anchor_relative_minute"].astype(np.int64) // 1440) - 1
+
+    # Range of valid days per user — used to drop windows whose horizon would
+    # extend past the last observed day for that user (we cannot know the
+    # label).
+    max_day_per_user = ev.groupby(USER_COL)[DATE_COL].max()
+    # Also consider the feature horizon: take the max of (max event day, max
+    # feature end_day).  This is conservative — if a user has no recorded
+    # events, we keep all their windows as negatives (since negative labels
+    # don't require future event data).
+
+    # Cross-join via merge: for each window, attach the *earliest* event day
+    # within (end_day, end_day + horizon_days].
+    ev_sorted = ev.sort_values(["_ev_key" if False else DATE_COL]).rename(
+        columns={DATE_COL: "next_event_day"}
+    )
+    ev_sorted["_ev_key"] = ev_sorted["next_event_day"]
+    ev_sorted = ev_sorted.sort_values("next_event_day").reset_index(drop=True)
+    feats_sorted = feats.sort_values("end_day").reset_index(drop=True)
+
+    # Use merge_asof to find the *first* event day strictly after end_day for
+    # each (user, window).  `direction='forward'` with
+    # `allow_exact_matches=False` enforces strict-greater-than.
+    # merge_asof requires the `on` keys to be globally sorted on each side.
+    asof = pd.merge_asof(
+        feats_sorted[[USER_COL, "end_day"]],
+        ev_sorted[[USER_COL, "_ev_key", "next_event_day"]],
+        left_on="end_day",
+        right_on="_ev_key",
+        by=USER_COL,
+        direction="forward",
+        allow_exact_matches=False,
+    )
+    feats_sorted["next_event_day"] = asof["next_event_day"].to_numpy()
+    feats_sorted["time_to_event_days"] = (
+        feats_sorted["next_event_day"] - feats_sorted["end_day"]
+    )
+    feats_sorted["target_binary"] = (
+        feats_sorted["time_to_event_days"].between(1, horizon_days, inclusive="both")
+    ).astype(int)
+
+    # Drop windows whose horizon extends beyond the user's observation period:
+    # i.e. windows where end_day + horizon_days > max(end_day, max_event_day)
+    # for that user.  Without this rule, far-future windows of users with
+    # recorded events would be wrongly labelled negative.
+    user_max_end = feats_sorted.groupby(USER_COL)["end_day"].transform("max")
+    user_max_event = (
+        feats_sorted[USER_COL].map(max_day_per_user).fillna(-np.inf)
+    )
+    user_obs_end = np.maximum(user_max_end, user_max_event)
+    horizon_fits = feats_sorted["end_day"] + horizon_days <= user_obs_end
+    feats_sorted = feats_sorted[horizon_fits].copy()
+
+    feats_sorted["horizon_days"] = horizon_days
+    feats_sorted["label_strategy"] = f"event_onset_h{horizon_days}_t{WINDOW_LABEL_THRESHOLD}"
+    feats_sorted = feats_sorted.drop(columns=["_ev_key"], errors="ignore")
+    return feats_sorted.reset_index(drop=True)
+
+
+def run_window_event_labeling(
+    features_path: Path = DATA_PROCESSED / "baseline_smartwatch_features.parquet",
+    probable_event_days_path: Path | None = None,
+    parquet_path: Path = DATA_PROCESSED / "baseline_smartwatch_features_labeled.parquet",
+    csv_path: Path = DATA_PROCESSED / "baseline_smartwatch_features_labeled.csv",
+    summary_path: Path = OUTPUT_TABLES / "label_distribution_summary.csv",
+    threshold: int = WINDOW_LABEL_THRESHOLD,
+    horizon_days: int = WINDOW_LABEL_HORIZON_DAYS,
+) -> pd.DataFrame:
+    """Generate the canonical labelled-features parquet from event-onset labels.
+
+    This replaces ``src.labels.run_labeling`` as the source of
+    ``baseline_smartwatch_features_labeled.parquet`` for all downstream
+    Tier-1/2/3 models.  The previous weekly-symptom labelling pipeline is
+    retained in ``src/labels.py`` for ablation comparison only.
+    """
+    if probable_event_days_path is None:
+        probable_event_days_path = (
+            OUTPUT_TABLES / f"probable_event_days_threshold_{threshold}.csv"
+        )
+
+    features = pd.read_parquet(features_path)
+    probable = pd.read_csv(probable_event_days_path)
+    labeled = label_windows_with_event_onset(
+        features, probable, horizon_days=horizon_days
+    )
+
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    labeled.to_parquet(parquet_path, index=False)
+    labeled.to_csv(csv_path, index=False)
+
+    summary = (
+        labeled["target_binary"]
+        .value_counts(dropna=False)
+        .rename_axis("label")
+        .reset_index(name="count")
+    )
+    summary["pct"] = summary["count"] / summary["count"].sum() * 100
+    summary.to_csv(summary_path, index=False)
+    return labeled
 
 
 if __name__ == "__main__":

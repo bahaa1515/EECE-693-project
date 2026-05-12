@@ -1,0 +1,87 @@
+# EECE-693 Multimodal GRU – Phase 3+ Implementation Notes
+# Agent-friendly format for Copilot / Claude / GPT
+
+project: asthma_exacerbation_prediction
+current_phase: 3
+status: proceed_with_caveats
+
+data_issues:
+  prevalence_shift:
+    train_positive_rate: 0.225
+    val_positive_rate: 0.069
+    test_positive_rate: 0.482
+    action: "After training, apply CalibratedClassifierCV with Platt scaling on validation set before test evaluation."
+    warning: "Validation set positives ~472; early stopping on PR-AUC may be unstable. Consider monitoring validation loss as well."
+  missing_rates:
+    smartinhaler: 0.63
+    peakflow: 0.426
+    daily_questionnaire: 0.844
+    weekly_questionnaire: 0.002
+    patient_static: 0.00
+    action: "Impute missing with -1 and add binary missing indicator per modality. Check feature importance after training; if inhaler features have zero importance, it's a valid finding."
+  window_overlap:
+    stride_minutes: 60
+    window_minutes: 1440
+    overlap_fraction: 0.958
+    action: "Sensitivity check: train on non-overlapping windows (stride = 1440 min) and compare ROC-AUC. Report if drop is significant."
+  environment_modality:
+    file_present: true
+    builder_implemented: true
+    included_in_multimodal: false
+    action: "Explicitly mention in final report as future work. Do not add now."
+
+model_architecture:
+  multimodal_gru:
+    input_sequence: "(batch, 288, 4)"   # after subsampling factor 5
+    gru_layers: 2
+    hidden_size: 64
+    dropout: 0.3
+    tabular_input_dim: 90
+    tab_mlp_layers: [64, 32]
+    fusion: "concatenate GRU hidden state (64) + tab_embed (32) -> 96 -> Linear(1)"
+    loss: "BCEWithLogitsLoss with pos_weight computed from train set (neg/pos = 3.44)"
+    optimizer: "Adam(lr=1e-3, weight_decay=1e-4)"
+    early_stopping: "patience=5 on validation loss, restore_best_weights=True"
+    batch_size: 64
+
+ablation_configs:
+  - name: "SW_only"
+    tab_dim: 0
+  - name: "SW_inhaler"
+    tab_dim: 5
+    included_blocks: ["smartinhaler"]
+  - name: "SW_inhaler_pef"
+    tab_dim: 19
+    included_blocks: ["smartinhaler", "peakflow"]
+  - name: "SW_inhaler_pef_dailyQ"
+    tab_dim: 23
+    included_blocks: ["smartinhaler", "peakflow", "daily_questionnaire"]
+  - name: "Full"
+    tab_dim: 90
+    included_blocks: ["smartinhaler", "peakflow", "daily_questionnaire", "weekly_questionnaire", "patient_static"]
+
+evaluation:
+  metrics: ["roc_auc", "pr_auc", "brier", "f1", "precision", "recall", "accuracy"]
+  split_seed: 42
+  patient_wise: true
+  calibration_after_training: true    # Platt scaling on validation set
+  note: "Absolute PR-AUC and Brier are inflated due to test set prevalence 48%. Report ROC-AUC as primary for discrimination."
+
+report_writing:
+  sections_to_update: ["Multimodal Modeling", "Results", "Discussion", "Conclusion"]
+  mention_as_limitations:
+    - "Prevalence shift (train 22.5%, test 48.2%)"
+    - "High missing rates (inhaler 63%, daily Q 84%)"
+    - "Environment data not used (future work)"
+    - "Small cohort (18 labeled patients)"
+  do_not_claim: "Generalizable absolute performance; instead emphasize relative improvements and methodological rigor."
+
+next_actions:
+  - step: "Implement make_multimodal_gru() in deep_learning.py"
+  - step: "Write training loop that accepts optional tabular features"
+  - step: "Run quick overfit test on 20% of training data"
+  - step: "Execute ablation experiments (5 configs) saving results to outputs/tables/multimodal_results.csv"
+  - step: "Apply calibration on validation set, then evaluate on test"
+  - step: "Update report Section 8 with results table and calibration discussion"
+
+confidence: high

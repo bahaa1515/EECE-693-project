@@ -1,7 +1,22 @@
-numpy
-pandas
-matplotlib
-scikit-learn
-xgboost
-tqdm
-pyarrow
+# Pinned dependencies for Colab T4 runs (Python 3.11 environment).
+# These versions are the source of truth for headline metrics in the report.
+# Local CPU runs use requirements.txt (unpinned) for development convenience.
+#
+# Version notes
+# -------------
+# torch 2.4.0+cu121 ships with cuDNN deterministic mode working on Colab T4
+# (Tesla T4, sm_75).  Install with the PyTorch CUDA wheel index:
+#   pip install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+#
+# numpy / pandas / scikit-learn pins match the versions available on Colab as
+# of May 2026.  Bumping any of them invalidates reproducibility of the
+# headline numbers — re-run the full pipeline (notebooks/00_colab_full_pipeline.ipynb)
+# if you change a pin.
+numpy==1.26.4
+pandas==2.2.2
+scikit-learn==1.5.1
+xgboost==2.1.0
+pyarrow==16.1.0
+matplotlib==3.9.0
+tqdm==4.66.4
+torch==2.4.0

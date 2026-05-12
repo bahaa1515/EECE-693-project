@@ -40,3 +40,15 @@ dist/
 Thumbs.db
 .vscode/
 .idea/
+
+# Per-run / per-seed artifacts (only headline_results.csv + canonical tables tracked)
+outputs/tables/tier2_seed*_results.csv
+outputs/tables/tier2_multi_seed_results.csv
+outputs/tables/tier2_multi_seed_results_summary.csv
+outputs/tables/deep_learning_reproduced_results.csv
+outputs/tables/deep_learning_report_comparison.csv
+outputs/tables/mm_*_history.csv
+outputs/tables/*_history.csv
+outputs/tables/env_info.*
+outputs/tables/seq_*.csv
+outputs/tables/seq_run_log.txt
