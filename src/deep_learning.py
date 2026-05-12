@@ -1325,6 +1325,61 @@ def run_multimodal_experiment(
     return results
 
 
+def run_multimodal_multi_seed(
+    seeds: list[int] | None = None,
+    labeled_path: Path = DATA_PROCESSED / "baseline_smartwatch_features_labeled.parquet",
+    clean_path: Path = DATA_INTERIM / "smartwatch_cleaned.parquet",
+    epochs: int = 20,
+    batch_size: int = 64,
+    patience: int = 5,
+    output_path: Path = OUTPUT_TABLES / "multimodal_multi_seed_results.csv",
+) -> pd.DataFrame:
+    """Run the Tier-3 multimodal ablation across multiple seeds and aggregate.
+
+    For each seed we re-run all configurations in
+    ``MULTIMODAL_ABLATION_CONFIGS`` with a fresh patient-grouped split and
+    fresh model initialisation, then report mean / std / min / median / max
+    of each metric per config.  This is the Tier-3 analogue of
+    ``run_deep_learning_multi_seed`` and is the defensible way to compare
+    modality blocks given the high seed sensitivity in an 18-patient cohort.
+    """
+    seeds = seeds or [42, 43, 44, 45, 46]
+    all_rows: list[pd.DataFrame] = []
+    for s in seeds:
+        per_seed_path = OUTPUT_TABLES / f"multimodal_seed{s}_results.csv"
+        df = run_multimodal_experiment(
+            labeled_path=labeled_path,
+            clean_path=clean_path,
+            epochs=epochs,
+            batch_size=batch_size,
+            patience=patience,
+            random_state=s,
+            output_path=per_seed_path,
+        )
+        df["seed"] = s
+        all_rows.append(df)
+    combined = pd.concat(all_rows, ignore_index=True)
+    metric_cols = [
+        c
+        for c in combined.columns
+        if c
+        not in {"model", "seed", "tab_dim", "best_epoch", "best_val_loss", "calibration"}
+        and pd.api.types.is_numeric_dtype(combined[c])
+    ]
+    agg = (
+        combined.groupby("model")[metric_cols]
+        .agg(["mean", "std", "min", "median", "max"])
+        .round(4)
+    )
+    agg.columns = ["_".join(c) for c in agg.columns]
+    agg = agg.reset_index()
+    agg["n_seeds"] = len(seeds)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    combined.to_csv(output_path, index=False)
+    agg.to_csv(output_path.with_name(output_path.stem + "_summary.csv"), index=False)
+    return agg
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Tier-2 GRU/CNN experiments.")
     parser.add_argument("--epochs", type=int, default=20)

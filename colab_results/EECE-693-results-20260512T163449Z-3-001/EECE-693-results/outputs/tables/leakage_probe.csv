@@ -1,0 +1,4 @@
+probe,auc,threshold,pass
+shuffled_labels,0.495,0.6,True
+or_recovery,1.0,0.95,True
+horizon_check,,0.0,True

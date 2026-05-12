@@ -1,4 +1,0 @@
-label_strategy,threshold,input_length_days,washout_days,model,n_features,n_train,n_test,train_users,test_users,train_positive,test_positive,accuracy,precision,recall,f1,roc_auc,pr_auc,brier
-questionnaire_event_episode_labeling,3,7,7,Logistic Regression balanced,427,1089,263,15,5,23,32,0.8631178707224335,0.4090909090909091,0.28125,0.3333333333333333,0.7416801948051949,0.36424328675209905,0.1207521208476151
-questionnaire_event_episode_labeling,3,7,7,Random Forest balanced,427,1089,263,15,5,23,32,0.8783269961977186,0.0,0.0,0.0,0.2757034632034632,0.08404256281452324,0.11768067672967567
-questionnaire_event_episode_labeling,3,7,7,Gradient Boosting fallback,427,1089,263,15,5,23,32,0.8783269961977186,0.0,0.0,0.0,0.42458062770562777,0.14583010835913313,0.12199243293855254

@@ -81,13 +81,19 @@ def run_pipeline(full: bool = False) -> int:
         )
         print(agg.to_string(index=False))
 
-    step(4, n_steps, "Tier-3 multimodal ablation")
-    from src.deep_learning import run_multimodal_experiment
+    step(4, n_steps, f"Tier-3 multimodal ablation ({len(seeds)} seed{'s' if len(seeds) > 1 else ''})")
+    from src.deep_learning import run_multimodal_experiment, run_multimodal_multi_seed
 
-    mm_results = run_multimodal_experiment(
-        epochs=epochs, batch_size=64, patience=patience, random_state=seeds[0]
-    )
-    print(mm_results.to_string(index=False))
+    if len(seeds) == 1:
+        mm_results = run_multimodal_experiment(
+            epochs=epochs, batch_size=64, patience=patience, random_state=seeds[0]
+        )
+        print(mm_results.to_string(index=False))
+    else:
+        mm_agg = run_multimodal_multi_seed(
+            seeds=seeds, epochs=epochs, batch_size=64, patience=patience
+        )
+        print(mm_agg.to_string(index=False))
 
     step(5, n_steps, "Aggregate headline results")
     headline_path = OUTPUT_TABLES / "headline_results.csv"
@@ -126,13 +132,18 @@ def aggregate_headline(seeds: list[int], out_path: Path) -> None:
         df["source"] = "single-seed"
         tables.append(df)
 
-    # Tier-3.
-    mm = OUTPUT_TABLES / "multimodal_results.csv"
-    if mm.exists():
-        df = pd.read_csv(mm)
-        df = df.rename(columns={"model": "model"} if "model" in df.columns else {})
+    # Tier-3: prefer multi-seed summary, fall back to single-seed.
+    mm_multi = OUTPUT_TABLES / "multimodal_multi_seed_results_summary.csv"
+    mm_single = OUTPUT_TABLES / "multimodal_results.csv"
+    if mm_multi.exists():
+        df = pd.read_csv(mm_multi)
         df["tier"] = "Tier-3"
-        df["source"] = "multimodal-ablation"
+        df["source"] = "multimodal-ablation-multi-seed"
+        tables.append(df)
+    elif mm_single.exists():
+        df = pd.read_csv(mm_single)
+        df["tier"] = "Tier-3"
+        df["source"] = "multimodal-ablation-single-seed"
         tables.append(df)
 
     if not tables:
