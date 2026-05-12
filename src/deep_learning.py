@@ -267,6 +267,114 @@ def make_gru(
     return GRUClassifier()
 
 
+def _init_recurrent_layer(layer, arch: str) -> None:
+    """Shared init for ``nn.GRU`` / ``nn.LSTM`` / ``nn.RNN`` layers.
+
+    - Xavier uniform on ``weight_ih*`` (input → hidden).
+    - Orthogonal on ``weight_hh*`` (hidden → hidden) — critical for vanilla RNN
+      stability on long sequences and a known seed-variance reducer for GRU/LSTM.
+    - Zero on all biases, then set the forget-gate bias slice to 1.0:
+        - GRU bias layout: (r, z, n) → reset-gate slice [H:2H] (matches our
+          previous custom init).
+        - LSTM bias layout: (i, f, g, o) → forget-gate slice [H:2H]
+          (Jozefowicz et al. 2015).
+        - vanilla RNN has no gates → biases stay zero.
+    """
+    import torch.nn as nn  # local import keeps factory functions self-contained
+    for name, param in layer.named_parameters():
+        if "weight_ih" in name:
+            nn.init.xavier_uniform_(param)
+        elif "weight_hh" in name:
+            nn.init.orthogonal_(param)
+        elif "bias" in name:
+            nn.init.zeros_(param)
+            if arch in ("gru", "lstm"):
+                H = param.shape[0] // (3 if arch == "gru" else 4)
+                param.data[H : 2 * H].fill_(1.0)
+
+
+def make_lstm(
+    input_dim: int = 4,
+    hidden_dim: int = 64,
+    num_layers: int = 2,
+    dropout: float = 0.3,
+    subsample: int = 5,
+):
+    """LSTM counterpart of ``make_gru``.
+
+    Same hidden size / depth / dropout / subsampling.  Init mirrors GRU
+    (Xavier input, orthogonal recurrent, forget-gate bias = 1).  Provides a
+    second well-known gated-recurrent baseline for the Tier-2 architecture
+    sweep.
+    """
+    _, nn, _, _ = _require_torch()
+
+    class LSTMClassifier(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self._subsample = subsample
+            self.lstm = nn.LSTM(
+                input_size=input_dim,
+                hidden_size=hidden_dim,
+                num_layers=num_layers,
+                dropout=dropout if num_layers > 1 else 0.0,
+                batch_first=True,
+            )
+            self.fc = nn.Linear(hidden_dim, 1)
+            _init_recurrent_layer(self.lstm, "lstm")
+            nn.init.xavier_uniform_(self.fc.weight)
+            nn.init.zeros_(self.fc.bias)
+
+        def forward(self, x):
+            x = x[:, :: self._subsample, :]
+            _, (h, _c) = self.lstm(x)
+            return self.fc(h[-1]).squeeze(1)
+
+    return LSTMClassifier()
+
+
+def make_rnn(
+    input_dim: int = 4,
+    hidden_dim: int = 64,
+    num_layers: int = 2,
+    dropout: float = 0.3,
+    subsample: int = 5,
+):
+    """Vanilla tanh-RNN counterpart of ``make_gru``.
+
+    Same hidden size / depth / dropout / subsampling.  Orthogonal
+    ``weight_hh`` is essential here — default uniform init makes a 2-layer
+    tanh RNN unstable on 288-step sequences.  No gates, so no
+    forget-gate-bias trick applies.  Serves as the low-capacity recurrent
+    floor in the Tier-2 architecture sweep.
+    """
+    _, nn, _, _ = _require_torch()
+
+    class RNNClassifier(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self._subsample = subsample
+            self.rnn = nn.RNN(
+                input_size=input_dim,
+                hidden_size=hidden_dim,
+                num_layers=num_layers,
+                dropout=dropout if num_layers > 1 else 0.0,
+                nonlinearity="tanh",
+                batch_first=True,
+            )
+            self.fc = nn.Linear(hidden_dim, 1)
+            _init_recurrent_layer(self.rnn, "rnn")
+            nn.init.xavier_uniform_(self.fc.weight)
+            nn.init.zeros_(self.fc.bias)
+
+        def forward(self, x):
+            x = x[:, :: self._subsample, :]
+            _, h = self.rnn(x)
+            return self.fc(h[-1]).squeeze(1)
+
+    return RNNClassifier()
+
+
 def make_cnn(input_dim: int = 4, dropout: float = 0.3, subsample: int = 5):
     _, nn, _, _ = _require_torch()
 
@@ -456,6 +564,8 @@ def train_evaluate_sequence_models(
 
     model_configs = [
         ("GRU (2-layer)", make_gru),
+        ("LSTM (2-layer)", make_lstm),
+        ("RNN (2-layer, tanh)", make_rnn),
         ("CNN (3-layer)", make_cnn),
     ]
 
@@ -997,7 +1107,8 @@ def _platt_scale(
     return calibrator.predict_proba(p_test.reshape(-1, 1))[:, 1]
 
 
-def make_multimodal_gru(
+def make_multimodal_recurrent(
+    arch: str = "gru",
     seq_input_dim: int = 4,
     tab_dim: int = 0,
     hidden_dim: int = 64,
@@ -1005,45 +1116,58 @@ def make_multimodal_gru(
     dropout: float = 0.3,
     subsample: int = 5,
 ):
-    """Build an intermediate-fusion GRU for multimodal asthma exacerbation prediction.
+    """Build an intermediate-fusion recurrent model for multimodal prediction.
+
+    Generalises ``make_multimodal_gru`` over three recurrent architectures
+    so the Tier-3 ablation can sweep architecture × feature-subset under an
+    identical training/eval protocol.
 
     Architecture
     ────────────
-    Sequence branch
-        GRU(seq_input_dim, hidden_dim, num_layers, dropout) → h_T  (hidden_dim,)
-    Tabular branch  (constructed only when tab_dim > 0)
+    Sequence branch (selected by ``arch``)
+        ``arch="gru"``  → ``nn.GRU``  → final hidden state ``h[-1]``  (hidden_dim,)
+        ``arch="lstm"`` → ``nn.LSTM`` → final hidden state ``h[-1]``  (hidden_dim,)
+        ``arch="rnn"``  → ``nn.RNN(tanh)`` → final hidden state ``h[-1]``  (hidden_dim,)
+    Tabular branch  (constructed only when ``tab_dim > 0``)
         Linear(tab_dim → hidden_dim) → ReLU → Dropout
         Linear(hidden_dim → hidden_dim // 2) → ReLU → Dropout
-        → tab_embed  (hidden_dim // 2,)
     Fusion FC
-        tab_dim = 0 : Linear(hidden_dim, 1)              unimodal GRU
-        tab_dim > 0 : Linear(hidden_dim + hidden_dim // 2, 1)   multimodal
+        ``tab_dim == 0`` : ``Linear(hidden_dim, 1)``                  unimodal
+        ``tab_dim > 0``  : ``Linear(hidden_dim + hidden_dim // 2, 1)``  multimodal
 
-    Parameters
-    ----------
-    seq_input_dim : channels in the minute-level sequence (HR, activity, intensity, steps).
-    tab_dim       : number of tabular features; 0 → sequence-only (SW_only ablation).
-    hidden_dim    : GRU hidden size (default 64, matches Tier-2 unimodal GRU).
-    num_layers    : stacked GRU layers (default 2).
-    dropout       : dropout rate applied inside GRU and tab MLP (default 0.3).
-    subsample     : take every ``subsample``-th minute before feeding the GRU
-                    (default 5 → 1440 → 288 steps, same as Tier-2 baseline).
+    All three architectures share hidden size, depth, dropout, subsampling
+    and the shared init helper ``_init_recurrent_layer`` — only the
+    recurrent cell itself differs.  This is the experiment design point:
+    the comparison isolates inductive-bias differences, not capacity.
     """
     torch, nn, _, _ = _require_torch()
+    arch = arch.lower()
+    if arch not in {"gru", "lstm", "rnn"}:
+        raise ValueError(f"Unknown arch={arch!r}; expected 'gru', 'lstm', or 'rnn'.")
     tab_hidden = hidden_dim // 2  # 32
     fc_in = hidden_dim + (tab_hidden if tab_dim > 0 else 0)
 
-    class _MultimodalGRU(nn.Module):
+    def _build_recurrent() -> "nn.Module":
+        common = dict(
+            input_size=seq_input_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            dropout=dropout if num_layers > 1 else 0.0,
+            batch_first=True,
+        )
+        if arch == "gru":
+            return nn.GRU(**common)
+        if arch == "lstm":
+            return nn.LSTM(**common)
+        return nn.RNN(nonlinearity="tanh", **common)
+
+    class _MultimodalRecurrent(nn.Module):
         def __init__(self) -> None:
             super().__init__()
             self._subsample = subsample
-            self.gru = nn.GRU(
-                input_size=seq_input_dim,
-                hidden_size=hidden_dim,
-                num_layers=num_layers,
-                dropout=dropout if num_layers > 1 else 0.0,
-                batch_first=True,
-            )
+            self._arch = arch
+            self.rnn = _build_recurrent()
+            _init_recurrent_layer(self.rnn, arch)
             self.tab_mlp: nn.Sequential | None
             if tab_dim > 0:
                 self.tab_mlp = nn.Sequential(
@@ -1057,9 +1181,14 @@ def make_multimodal_gru(
             else:
                 self.tab_mlp = None
             self.fc = nn.Linear(fc_in, 1)
+            nn.init.xavier_uniform_(self.fc.weight)
+            nn.init.zeros_(self.fc.bias)
 
         def forward(self, x_seq, x_tab=None):  # type: ignore[override]
-            _, h = self.gru(x_seq[:, :: self._subsample, :])
+            x_seq = x_seq[:, :: self._subsample, :]
+            out = self.rnn(x_seq)
+            # GRU/RNN return (out, h); LSTM returns (out, (h, c)).
+            h = out[1][0] if self._arch == "lstm" else out[1]
             h_T = h[-1]  # (batch, hidden_dim)
             if self.tab_mlp is not None and x_tab is not None:
                 fused = torch.cat([h_T, self.tab_mlp(x_tab)], dim=1)
@@ -1067,7 +1196,27 @@ def make_multimodal_gru(
                 fused = h_T
             return self.fc(fused).squeeze(-1)
 
-    return _MultimodalGRU()
+    return _MultimodalRecurrent()
+
+
+def make_multimodal_gru(
+    seq_input_dim: int = 4,
+    tab_dim: int = 0,
+    hidden_dim: int = 64,
+    num_layers: int = 2,
+    dropout: float = 0.3,
+    subsample: int = 5,
+):
+    """Backward-compat alias: build the GRU variant of the multimodal model."""
+    return make_multimodal_recurrent(
+        arch="gru",
+        seq_input_dim=seq_input_dim,
+        tab_dim=tab_dim,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        dropout=dropout,
+        subsample=subsample,
+    )
 
 
 def make_multimodal_loaders(
@@ -1226,6 +1375,12 @@ MULTIMODAL_ABLATION_CONFIGS: list[tuple[str, list[str] | None]] = [
     ("Full",           None),
 ]
 
+# Architectures swept in Tier-3 alongside the feature-subset ablation.  Each
+# arch shares hidden size, depth, dropout, subsampling, training schedule,
+# Platt scaling and patient-cluster bootstrap — the comparison isolates
+# inductive-bias differences, not capacity or HP tuning.
+MULTIMODAL_ARCH_CONFIGS: list[str] = ["gru", "lstm", "rnn"]
+
 
 def run_multimodal_experiment(
     labeled_path: Path = DATA_PROCESSED / "baseline_smartwatch_features_labeled.parquet",
@@ -1277,46 +1432,50 @@ def run_multimodal_experiment(
     test_groups = labeled_for_groups.iloc[split.test_idx]["user_key"].to_numpy()
 
     rows = []
-    for config_name, prefixes in MULTIMODAL_ABLATION_CONFIGS:
-        col_indices, col_names = _select_tab_cols(split.tab_feature_names, prefixes)
-        tab_dim = len(col_indices)
-        print(f"\n[Ablation] {config_name!r}  tab_dim={tab_dim}")
+    for arch in MULTIMODAL_ARCH_CONFIGS:
+        for config_name, prefixes in MULTIMODAL_ABLATION_CONFIGS:
+            col_indices, col_names = _select_tab_cols(split.tab_feature_names, prefixes)
+            tab_dim = len(col_indices)
+            row_name = f"{arch.upper()}_{config_name}"
+            print(f"\n[Ablation] {row_name!r}  tab_dim={tab_dim}")
 
-        set_seed(random_state)  # ensure identical weight init across configs
-        model = make_multimodal_gru(tab_dim=tab_dim)
-        train_loader, val_loader, test_loader = make_multimodal_loaders(
-            split, col_indices=col_indices, batch_size=batch_size
-        )
-        model, history, meta = train_multimodal_model(
-            model,
-            train_loader,
-            val_loader,
-            split.y_train,
-            epochs=epochs,
-            patience=patience,
-        )
+            set_seed(random_state)  # identical weight init across configs/archs
+            model = make_multimodal_recurrent(arch=arch, tab_dim=tab_dim)
+            train_loader, val_loader, test_loader = make_multimodal_loaders(
+                split, col_indices=col_indices, batch_size=batch_size
+            )
+            model, history, meta = train_multimodal_model(
+                model,
+                train_loader,
+                val_loader,
+                split.y_train,
+                epochs=epochs,
+                patience=patience,
+            )
 
-        p_val = predict_multimodal_model(model, val_loader)
-        p_test_raw = predict_multimodal_model(model, test_loader)
-        p_test = _platt_scale(split.y_val, p_val, p_test_raw)
+            p_val = predict_multimodal_model(model, val_loader)
+            p_test_raw = predict_multimodal_model(model, test_loader)
+            p_test = _platt_scale(split.y_val, p_val, p_test_raw)
 
-        pred = (p_test >= 0.5).astype(int)
-        row = classification_metrics(config_name, split.y_test, pred, p_test)
-        row["tab_dim"] = tab_dim
-        row["best_epoch"] = meta["best_epoch"]
-        row["best_val_loss"] = round(meta["best_val_loss"], 6)
-        row["seed"] = random_state
-        ci_lo, ci_hi = bootstrap_auc_ci(split.y_test, p_test, groups=test_groups)
-        row["auc_ci_lo"] = round(ci_lo, 3)
-        row["auc_ci_hi"] = round(ci_hi, 3)
-        rows.append(row)
+            pred = (p_test >= 0.5).astype(int)
+            row = classification_metrics(row_name, split.y_test, pred, p_test)
+            row["arch"] = arch
+            row["feature_subset"] = config_name
+            row["tab_dim"] = tab_dim
+            row["best_epoch"] = meta["best_epoch"]
+            row["best_val_loss"] = round(meta["best_val_loss"], 6)
+            row["seed"] = random_state
+            ci_lo, ci_hi = bootstrap_auc_ci(split.y_test, p_test, groups=test_groups)
+            row["auc_ci_lo"] = round(ci_lo, 3)
+            row["auc_ci_hi"] = round(ci_hi, 3)
+            rows.append(row)
 
-        safe_name = config_name.lower()
-        history.to_csv(OUTPUT_TABLES / f"mm_{safe_name}_history.csv", index=False)
-        print(
-            f"  → ROC-AUC={row['roc_auc']:.3f}  PR-AUC={row['pr_auc']:.3f}"
-            f"  F1={row['f1']:.3f}  best_epoch={meta['best_epoch']}"
-        )
+            safe_name = f"{arch}_{config_name.lower()}"
+            history.to_csv(OUTPUT_TABLES / f"mm_{safe_name}_history.csv", index=False)
+            print(
+                f"  → ROC-AUC={row['roc_auc']:.3f}  PR-AUC={row['pr_auc']:.3f}"
+                f"  F1={row['f1']:.3f}  best_epoch={meta['best_epoch']}"
+            )
 
     results = pd.DataFrame(rows)
     output_path.parent.mkdir(parents=True, exist_ok=True)
