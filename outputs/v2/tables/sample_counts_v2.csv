@@ -1,0 +1,2 @@
+threshold,input_length_days,washout_days,positive_candidates,positive_samples,positive_excluded_not_enough_history,negative_candidates,negative_samples,negative_excluded_positive_week_overlap,negative_excluded_event_overlap,negative_excluded_washout,total_samples,negative_excluded_total
+3,7,7,63,55,8,1517,1297,129,0,91,1352,220

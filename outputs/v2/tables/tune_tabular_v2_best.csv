@@ -1,0 +1,2 @@
+sensor_tag,threshold,input_length_days,washout_days,n_features,n_train,n_val,n_test,train_users,val_users,test_users,train_positive,val_positive,test_positive,seed,algo,params,param_C,param_class_weight,val_accuracy,val_precision,val_recall,val_f1,val_roc_auc,val_pr_auc,val_brier
+all,3,7,7,427,777,203,372,13,3,4,49,1,5,42,lr,C=10.0;class_weight=balanced,10.0,balanced,0.7586206896551724,0.0,0.0,0.0,0.19801980198019797,0.006097560975609756,0.21530748979365974
