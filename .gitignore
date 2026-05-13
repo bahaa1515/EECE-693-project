@@ -41,6 +41,25 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Frozen old codebase snapshot (kept locally for reference; not part of submission)
+progress_report/
+
+# Local-only scratch / dumps
+notes.txt
+colab_results/
+data/interim/
+
+# LaTeX build artifacts
+report/*.aux
+report/*.log
+report/*.out
+report/*.toc
+report/*.bbl
+report/*.blg
+report/*.synctex.gz
+report/*.fls
+report/*.fdb_latexmk
+
 # Per-run / per-seed artifacts (only headline_results.csv + canonical tables tracked)
 outputs/tables/tier2_seed*_results.csv
 outputs/tables/tier2_multi_seed_results.csv

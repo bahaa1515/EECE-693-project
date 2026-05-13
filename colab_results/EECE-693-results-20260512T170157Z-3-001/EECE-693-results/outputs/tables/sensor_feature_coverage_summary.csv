@@ -1,2 +1,0 @@
-threshold,input_length_days,washout_days,rows,smartwatch_day_coverage_mean,smartinhaler_day_coverage_mean,peakflow_day_coverage_mean,environment_day_coverage_mean
-3,7,7,1352,0.7016060862214707,0.2442941673710904,0.5177514792899407,0.7184065934065934

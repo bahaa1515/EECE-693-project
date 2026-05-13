@@ -1,0 +1,21 @@
+\begin{tabular}{lllrr}
+\toprule
+Experiment & Family & AUC & Delta & Seeds \\
+\midrule
+LSTM\_SW\_inhaler\_pef (locked) & Baseline & 0.634 +/- 0.062 & +0.000 & 5 \\
+LSTM\_baseline (focused) & DL variants & 0.625 +/- 0.059 & -0.009 & 5 \\
+LSTM\_A1\_per\_patient\_norm (focused) & DL variants & 0.623 +/- 0.063 & -0.011 & 5 \\
+GBM\_RandomForest\_ENG\_inhaler & Tabular GBM/RF & 0.582 +/- 0.079 & -0.052 & 5 \\
+LightGBM\_ENG\_inhaler & LightGBM (early-stop) & 0.579 +/- 0.040 & -0.055 & 5 \\
+GBM\_XGBoost\_ENG\_inhaler & Tabular GBM/RF & 0.559 +/- 0.053 & -0.075 & 5 \\
+GBM\_LightGBM\_ENG\_inhaler & Tabular GBM/RF & 0.554 +/- 0.058 & -0.080 & 5 \\
+Stack\_stack\_LR\_meta & Stacking & 0.554 +/- 0.077 & -0.080 & 5 \\
+GBM\_LightGBM\_ENG\_inhaler\_pef & Tabular GBM/RF & 0.553 +/- 0.066 & -0.081 & 5 \\
+Stack\_stack\_weighted\_val\_auc & Stacking & 0.553 +/- 0.073 & -0.081 & 5 \\
+Stack\_stack\_avg & Stacking & 0.553 +/- 0.073 & -0.081 & 5 \\
+GBM\_XGBoost\_ENG\_inhaler\_pef & Tabular GBM/RF & 0.549 +/- 0.063 & -0.085 & 5 \\
+GBM\_RandomForest\_ENG\_inhaler\_pef & Tabular GBM/RF & 0.548 +/- 0.083 & -0.086 & 5 \\
+LightGBM\_ENG\_inhaler\_pef & LightGBM (early-stop) & 0.539 +/- 0.107 & -0.095 & 5 \\
+LightGBM\_ENG\_only & LightGBM (early-stop) & 0.518 +/- 0.052 & -0.116 & 5 \\
+\bottomrule
+\end{tabular}

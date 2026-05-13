@@ -1,8 +1,0 @@
-,dtype,missing_count,missing_pct,n_unique
-user_key,int64,0,0.0,20
-date,int64,0,0.0,185
-time,str,0,0.0,1440
-activity_type,int64,0,0.0,39
-intensity,int64,0,0.0,256
-steps,int64,0,0.0,178
-hr,float64,531728,25.3,153

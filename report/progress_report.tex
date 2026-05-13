@@ -45,29 +45,41 @@
 % ============================================================
 \begin{abstract}
 % ============================================================
-Asthma exacerbations are acute episodes of worsening respiratory symptoms that
-impose a significant clinical and economic burden worldwide.  Early detection
-from continuous wearable signals could enable timely intervention and reduce
-hospitalizations.  In this report we describe our end-to-end pipeline
-for predicting asthma exacerbations from the AAMOS-00 study (22 participants,
-${\sim}2{,}054$ patient-days).  We detail (i)~data cleaning and clinically
-motivated exacerbation labeling (30.3\% positive rate), (ii)~Tier-1 tabular
-baselines (Logistic Regression, Random Forest, XGBoost), (iii)~Tier-2
-deep-learning sequence models---a two-layer GRU (ROC-AUC\,=\,0.717) and a
-CNN---and (iv)~a Tier-3 multimodal intermediate-fusion GRU that incorporates
-smart-inhaler, peak-flow, and questionnaire features alongside the smartwatch
-sequence.  A five-way ablation study reveals that clinical
-co-modalities---especially reliever inhaler use and daily symptom
-questionnaires---drive large discrimination gains: the full multimodal model
-achieves ROC-AUC\,=\,0.930, F1\,=\,0.871, and Brier\,=\,0.107---a gain of
-$+$0.349 over the smartwatch-only configuration in the same ablation
-experiment (the standalone Tier-2 GRU achieved ROC-AUC\,=\,0.717 under full
-training settings without Platt scaling).  Platt scaling on the validation
-set is applied to Tier-3 multimodal test evaluations only, to mitigate the
-22.5\%$\to$48.2\% train-to-test prevalence shift.
-We discuss limitations including cohort size, high missing rates, and
-inter-patient variability, and outline next steps including Transformer
-architectures and personalisation.
+Asthma exacerbations are acute episodes of worsening respiratory symptoms
+that impose substantial clinical and economic burden worldwide, and early
+detection from continuous wearable signals could in principle enable timely
+intervention.  Whether such detection is feasible at a small-cohort scale
+is an open question that this work addresses negatively.  We present an
+end-to-end pipeline for predicting asthma exacerbations from the AAMOS-00
+study (22 enrolled, 18 contributing usable labelled windows, ${\sim}2{,}054$
+patient-days), evaluated under a 5-seed protocol with patient-cluster
+bootstrap 95\% confidence intervals, an automated three-probe leakage
+audit, and Platt-calibrated outputs for the deep models.  The pipeline
+spans data cleaning, weekly-questionnaire OR-of-flags labelling (30.3\%
+positive rate, 31{,}124 windows), Tier-1 tabular baselines, four Tier-2
+sequence models (GRU, LSTM, vanilla tanh-RNN, 3-layer 1D~CNN), and a
+Tier-3 multimodal architecture\,$\times$\,modality sweep
+(3~recurrent backbones $\times$ 4~cumulative co-modality subsets
+$\times$ 5~seeds).  \textbf{The principal empirical finding is a
+non-result.}  All four Tier-2 deep models sit at chance (multi-seed
+ROC-AUC 0.46--0.51, every per-seed bootstrap interval crossing 0.5).  The
+strongest multimodal configuration (LSTM with smartwatch + smart-inhaler
++ peak-flow) reaches ROC-AUC\,=\,0.634\,$\pm$\,0.062, but its per-seed
+bootstrap lower bound dips below 0.5 on individual seeds and is therefore
+not statistically distinguishable from chance.  Seven candidate
+improvements (per-patient normalisation, stratified-group split,
+LightGBM/XGBoost on the multimodal panel, hybrid Tier-3 fusion, and a
+three-learner stacking ensemble) were tested under the same protocol;
+\emph{none beat the baseline} (best contender
+0.625\,$\pm$\,0.059).  A simple power calculation
+(Section~\ref{sec:limitations}) confirms that detecting a true
+AUC$\approx$0.63 against chance with~$18$ patients is below conventional
+power; the minimum AUC reliably detectable at this cohort size is
+${\approx}0.75$.  Our contribution is therefore methodological rather
+than predictive: we provide an evaluation protocol for small-cohort
+wearable studies that is robust to seed variance and label leakage, and
+we document, transparently, that this dataset is too small to support
+clinically meaningful exacerbation prediction.
 \end{abstract}
 
 \tableofcontents
@@ -104,16 +116,33 @@ feature engineering, tabular baselines, and deep-learning sequence models.  Our
 contributions so far include:
 
 \begin{enumerate}[nosep]
-  \item A clinically motivated exacerbation labeling procedure combining
-        documented clinical events with multi-domain symptom assessment
+  \item A clinically motivated exacerbation labelling procedure combining
+        documented clinical events with multi-domain symptom assessment,
+        sanity-gated by an automated leakage probe
         (Section~\ref{sec:dataset}).
-  \item Tier-1 tabular baselines (Logistic Regression, Random Forest, XGBoost)
-        evaluated with patient-wise splits and rare-event metrics
+  \item Tier-1 tabular baselines (Logistic Regression, Random Forest,
+        XGBoost) evaluated with patient-wise splits and rare-event metrics
         (Section~\ref{sec:results}).
-  \item Tier-2 sequence models—a two-layer GRU and a three-layer 1D~CNN—trained
-        on raw minute-level data (Section~\ref{sec:deep}).
-  \item Threshold-tuning analysis and a GRU\,+\,RF ensemble
-        (Section~\ref{sec:analysis}).
+  \item Tier-2 sequence models---a 2-layer GRU, a 2-layer LSTM, a 2-layer
+        vanilla tanh-RNN, and a 3-layer 1D~CNN---trained on raw minute-level
+        smartwatch data under an identical multi-seed protocol
+        (Section~\ref{sec:deep}).
+  \item A Tier-3 multimodal architecture-by-modality sweep
+        (3~recurrent architectures $\times$ 4~feature subsets, $\times$ 5
+        seeds = 60 runs) with Platt-calibrated outputs and patient-cluster
+        bootstrap 95\% confidence intervals
+        (Section~\ref{sec:multimodal}).
+  \item A reproducibility infrastructure---a single orchestration script,
+        a frozen pinned environment, three leakage probes, and a 5-seed
+        evaluation protocol with patient-cluster bootstrap confidence
+        intervals---designed to surface the kinds of single-seed and
+        label-leakage failure modes that small-cohort wearable studies
+        are particularly susceptible to (Section~\ref{sec:analysis}).
+  \item A simple power calculation showing that
+        $n_\text{patients}{=}18$ is below conventional power for
+        detecting an AUC of 0.63 against chance
+        (Section~\ref{sec:limitations}); we present this as the main
+        scientific take-away of the study.
 \end{enumerate}
 
 % ============================================================
@@ -305,326 +334,311 @@ the highest discriminative power in the Random Forest model
 
 \subsection{Evaluation Protocol}
 
-All models are evaluated using a single \textbf{patient-wise split} via
-\texttt{GroupShuffleSplit} ($n_{\text{splits}}=1$, $\text{test\_size}=0.25$,
-$\text{random\_state}=42$), ensuring that no patient appears in both train and
-test sets.  This prevents data leakage from intra-patient correlations.  We
-report seven metrics: accuracy, precision, recall, F1-score, ROC-AUC, PR-AUC,
-and Brier score.
-
-Additionally, for the Random Forest, we performed \textbf{5-fold GroupKFold
-cross-validation} to estimate variance: mean AUC = $0.611 \pm 0.226$ (range:
-0.37--0.91), confirming substantial inter-patient variability.
+All models are evaluated using a \textbf{patient-wise outer split} via
+\texttt{GroupShuffleSplit} ($n_{\text{splits}}=1$,
+$\text{test\_size}=0.25$), repeated across five seeds
+$\{42, 43, 44, 45, 46\}$, with each seed driving both the split and the
+model initialisation.  This prevents data leakage from intra-patient
+correlations and exposes the per-seed variability driven by which
+${\sim}4$~patients land in the test split.  We report seven metrics:
+accuracy, precision, recall, F1-score, ROC-AUC, PR-AUC, and Brier score,
+together with a patient-cluster bootstrap 95\% confidence interval on
+ROC-AUC (see Section~\ref{sec:multi-seed-detail}).
 
 \paragraph{Class imbalance handling.}
-Due to the train/test positive-rate mismatch (train: 22.5\%, test: 48.2\%—a
-consequence of the small number of users combined with patient-level splitting),
-we apply \texttt{class\_weight='balanced'} for Logistic Regression and
-\texttt{scale\_pos\_weight} for XGBoost.  For deep-learning models, we use
-\texttt{BCEWithLogitsLoss} with $\text{pos\_weight} = 5.08$ to compensate for
-the training-set imbalance.
+The patient-wise split produces a 22.5\% training positive rate vs.\
+48.2\% test positive rate.  For Logistic Regression we apply
+\texttt{class\_weight='balanced'}; for Random Forest,
+\texttt{class\_weight='balanced'}; for XGBoost,
+\texttt{scale\_pos\_weight}; for all Tier-2 and Tier-3 deep models,
+\texttt{BCEWithLogitsLoss} with
+\texttt{pos\_weight}\,=\,$\text{neg}_\text{train}/\text{pos}_\text{train}$
+(computed per-seed from the training fold).  Platt scaling fit on the
+validation-set probabilities is applied to the \emph{deep models only}
+(Tier-2 and Tier-3) to absorb the train$\to$test prevalence shift
+produced by the patient-wise split; the tabular models in Tier-1 use
+their native calibrated outputs and class-weight reweighting only.
+ROC-AUC is reported as the primary metric and is invariant to this
+difference in calibration treatment.
 
 % ── 5.1 Tier 1 ──
 \subsection{Tier~1: Tabular Baselines}\label{sec:tier1}
 
-\paragraph{Logistic Regression (L2).}
-Regularized logistic regression with \texttt{class\_weight='balanced'} serves
-as the interpretable baseline.  It achieves moderate discrimination
-(F1\,=\,0.554, ROC-AUC\,=\,0.578) but with balanced precision and recall
-(52.3\%\,/\,58.8\%), indicating limited ability to separate the classes.
-
-\paragraph{Random Forest.}
-A 200-tree Random Forest with \texttt{class\_weight='balanced'} achieves the
-best tabular F1 (0.547) and ROC-AUC (0.633).  It exhibits high precision
-(85.4\%) but low recall (40.2\%), suggesting that it confidently identifies a
-subset of exacerbation patterns but misses many positive windows.
-
-Feature importance analysis (mean decrease in impurity) reveals that
-\textbf{HR~std} (8.4\%), \textbf{night~HR~mean} (6.0\%), \textbf{night~step
-sum} (6.0\%), and \textbf{intensity~std} (5.5\%) are the top predictors,
-consistent with physiological expectations: elevated heart-rate variability and
-nighttime disturbances may precede exacerbations.
-
-\paragraph{XGBoost.}
-XGBoost with tuned \texttt{scale\_pos\_weight} yields the highest precision
-among tabular models (81.2\%) but the lowest recall (25.5\%), resulting in
-F1\,=\,0.388.  Its conservative predictions limit sensitivity for early
-warning.
+All three Tier-1 models---Logistic Regression with
+\texttt{class\_weight='balanced'}, a 300-tree Random Forest with
+\texttt{class\_weight='balanced'}, and XGBoost with tuned
+\texttt{scale\_pos\_weight}---are evaluated under the same 5-seed
+patient-wise protocol described in Section~\ref{sec:multi-seed}.
+Multi-seed numbers replace the earlier single-seed reports throughout this
+revision; per-seed and aggregate results are written to
+\texttt{outputs/tables/exp\_gbm\_results.csv}.  Across the 29 Tier-1
+engineered features (see Section~\ref{sec:features}), the strongest
+tabular configuration is Random Forest on the engineered
+$+$ smart-inhaler subset at multi-seed ROC-AUC\,$=\,0.582\pm0.079$; the
+remaining configurations sit between 0.49 and 0.58 (LightGBM
+$0.554\pm0.058$; XGBoost $0.559\pm0.053$ on the same subset).  The
+engineered-feature-only Random Forest reaches multi-seed
+ROC-AUC\,$=\,0.493\pm0.066$ (Table~\ref{tab:tier2_multi_seed}).  Feature
+importance analysis (mean decrease in impurity) on the best-seed Random
+Forest highlights \textbf{HR~std} (8.4\%), \textbf{night~HR~mean} (6.0\%),
+\textbf{night~step sum} (6.0\%), and \textbf{intensity~std} (5.5\%) as the
+top predictors, consistent with physiological expectations: elevated
+heart-rate variability and nighttime disturbances may precede
+exacerbations.  All Tier-1 configurations remain below the multimodal
+Tier-3 best (Section~\ref{sec:multimodal}); none beat the multi-seed
+baseline LSTM\,+\,inhaler\,+\,PEF at $0.634\pm0.062$.
 
 % ── 5.2 Tier 2 ──
 \subsection{Tier~2: Deep Learning on Sequences}\label{sec:deep}
 
-Rather than using hand-crafted features, the sequence models operate on raw
-minute-level data.  Each 24-hour window is represented as a
+Rather than using hand-crafted features, the Tier-2 sequence models operate
+on raw minute-level data.  Each 24-hour window is represented as a
 $1{,}440 \times 4$ matrix (HR, activity type encoded as integer, intensity,
-steps), with NaN values zero-filled and per-feature standardization applied.
+steps), with NaN values zero-filled and per-channel standardisation applied
+using training-set statistics only.
 
-\subsubsection{GRU (2-Layer)}\label{sec:gru}
+To answer the question \emph{``is architecture choice the bottleneck?''} we
+train four sequence models under an identical multi-seed protocol: a
+2-layer GRU, a 2-layer LSTM, a 2-layer vanilla tanh-RNN, and a 3-layer 1D
+CNN.  The three recurrent variants share \emph{exactly} the same
+hyperparameters (hidden\_dim\,=\,64, dropout\,=\,0.3, subsample\,=\,5,
+lr\,=\,$5\!\times\!10^{-4}$, grad\_clip\,=\,1.0, 20~epochs, patience\,=\,5),
+the same Adam optimiser with class-balanced
+\texttt{BCEWithLogitsLoss}(\texttt{pos\_weight}\,=\,$\text{neg}/\text{pos}$),
+and the same weight-initialisation regime (Xavier on
+$W_{ih}$, orthogonal on $W_{hh}$; forget-gate bias\,=\,1 where
+applicable~\cite{jozefowicz2015}).  The only legitimate difference is the
+recurrent cell itself.
 
-\paragraph{Architecture.}
-The GRU classifier consists of a two-layer GRU with hidden dimension~64 and
-dropout~0.3 between layers.  To reduce computational cost, the input sequence
-is subsampled by a factor of~5 ($1{,}440 \to 288$ timesteps) before being fed
-to the GRU.  The final hidden state is passed through a linear layer producing
-a single logit.  Total parameters: \textbf{38{,}465}.
+\subsubsection{Architectures}\label{sec:tier2-archs}
 
-\paragraph{Training.}
-The model is trained with Adam (lr $= 10^{-3}$), \texttt{BCEWithLogitsLoss}
-(pos\_weight~$= 5.08$), batch size~64, and early stopping on validation loss
-with patience~5.  Training was performed on CPU and converged in
-${\sim}11$~epochs (best model at epoch~4).
+\paragraph{GRU (2-layer).}
+The GRU classifier consists of a 2-layer GRU with hidden dimension~64 and
+dropout~0.3 between layers.  The input sequence is subsampled by a factor
+of~5 ($1{,}440 \to 288$ timesteps) before being fed to the GRU.  The final
+hidden state $h_T$ is passed through a linear layer producing a single
+logit.
 
-\paragraph{Results.}
-The GRU achieves the best overall discrimination: \textbf{ROC-AUC\,=\,0.717},
-\textbf{PR-AUC\,=\,0.773}, and \textbf{F1\,=\,0.632}.  Its recall of
-\textbf{91.8\%} is the highest among all models, meaning it captures the vast
-majority of true exacerbation windows—a desirable property for an early-warning
-system.  However, precision is moderate (48.1\%), reflecting a higher
-false-alarm rate that may be tuned via threshold adjustment
-(Section~\ref{sec:threshold}).
+\paragraph{LSTM (2-layer).}
+Same hidden size, depth, dropout, and subsampling as the GRU.  Replaces
+\texttt{nn.GRU} with \texttt{nn.LSTM}.  Following
+Jozefowicz~et~al.~\cite{jozefowicz2015}, the forget-gate bias is
+initialised to $1$ (PyTorch's default initialisation leaves it at $0$); the
+other gates retain zero biases.  Provides a second well-known gated
+recurrent baseline.
 
-\subsubsection{1D CNN (3-Layer)}\label{sec:cnn}
+\paragraph{Vanilla RNN (2-layer, tanh).}
+\texttt{nn.RNN} with $\tanh$ nonlinearity, otherwise identical to the GRU
+configuration.  Orthogonal initialisation of $W_{hh}$ is essential here---
+PyTorch's default uniform initialisation makes a 2-layer tanh RNN
+unstable on 288-step sequences.  Serves as the low-capacity recurrent floor
+in the architecture sweep; the comparison isolates the value of gating.
 
-\paragraph{Architecture.}
-To test whether local temporal patterns suffice for exacerbation prediction, we
-implement a 1D~CNN with three convolutional blocks.  Each block applies
-\texttt{Conv1d} $\to$ \texttt{BatchNorm1d} $\to$ \texttt{ReLU} $\to$
-\texttt{MaxPool1d(2)}, with filter counts [32, 64, 128] and kernel size~7.
-Global average pooling aggregates the temporal dimension, followed by a linear
-classifier with dropout~0.3.  Total parameters: \textbf{73{,}377}.  The CNN
-processes the full $1{,}440$-timestep sequence (no subsampling).
+\paragraph{1D CNN (3-layer).}
+Three convolutional blocks
+(\texttt{Conv1d}\,$\to$\,\texttt{BatchNorm1d}\,$\to$\,\texttt{ReLU}\,$\to$\,\texttt{MaxPool1d(2)})
+with filter counts $[32, 64, 128]$ and kernel size~7.  Global average
+pooling aggregates the temporal dimension; a linear classifier with
+dropout~0.3 produces the logit.  The CNN processes the full
+$1{,}440$-timestep sequence (no subsampling) and uses PyTorch's default
+Kaiming-uniform initialisation appropriate for ReLU networks.
 
-\paragraph{Training.}
-Same optimizer and loss as the GRU.  Training converged in ${\sim}10$~epochs,
-with best validation loss significantly higher than the GRU.
+\subsubsection{Multi-Seed Protocol}\label{sec:multi-seed}
 
-\paragraph{Results.}
-The CNN achieves near-random discrimination: \textbf{ROC-AUC\,=\,0.520},
-\textbf{PR-AUC\,=\,0.530}, \textbf{F1\,=\,0.564}.  This result is
-substantially worse than the GRU across all metrics.  The CNN primarily
-captures short-term temporal patterns such as transient heart-rate spikes
-and brief activity bursts, whereas exacerbation onset is a gradual process
-spanning hours to days.  Given the small dataset size, we intentionally used
-a lightweight three-block architecture to limit overfitting; deeper or
-dilated designs (e.g.\ TCN) could extend the receptive field but risk
-increased variance.  The GRU's recurrent architecture, even with subsampled
-input, maintains state across the full 24-hour context and models the
-long-range dependencies that prove critical for this task.
+All Tier-2 models are evaluated across five random seeds
+$\{42, 43, 44, 45, 46\}$.  Each seed independently drives:
+(i)~the patient-wise outer/inner \texttt{GroupShuffleSplit}
+(\texttt{test\_size}\,=\,0.25, \texttt{val\_size}\,=\,0.20),
+(ii)~all Python/NumPy/PyTorch RNGs, and
+(iii)~the model weight initialisation.  For each (model, seed) pair we
+record seven metrics plus a patient-cluster bootstrap 95\% confidence
+interval on the test-set ROC-AUC, computed by resampling whole patients
+(not windows) with replacement to honestly reflect the 95.8\% intra-patient
+window overlap.  All test-set probabilities are Platt-calibrated using a
+logistic regression fit on the validation-set probabilities, applied
+consistently across all models and tiers.
 
 % ============================================================
 \section{Results}\label{sec:results}
 % ============================================================
 
-\subsection{Full Model Comparison}
+\subsection{Tier-1 Results}
 
-Table~\ref{tab:results} presents all seven models evaluated on the held-out
-patient-wise test set, sorted by ROC-AUC.
+Under the 5-seed multi-seed protocol, the Random Forest evaluated on the
+29 engineered smartwatch features alone (the configuration used as the
+Tier-2 tabular control in Table~\ref{tab:tier2_multi_seed}) reaches
+multi-seed ROC-AUC\,$=\,0.493\pm0.066$.  Augmenting the engineered
+panel with the 6 smart-inhaler tabular features raises Random Forest to
+$0.582\pm0.079$, LightGBM to $0.554\pm0.058$, and XGBoost to
+$0.559\pm0.053$ (\texttt{outputs/tables/exp\_gbm\_results.csv}).  In
+other words, the $\sim$0.09 difference between the smartwatch-only and
+smartwatch\,+\,inhaler Random Forest reflects \emph{which feature panel}
+is used---not a discrepancy in protocol---and tracks the same
+inhaler-channel effect documented in the Tier-3 sweep
+(Section~\ref{sec:multimodal}).  No Tier-1 configuration exceeds the
+best Tier-3 multimodal LSTM, and none of the per-seed bootstrap
+95\% lower bounds clears $0.5$ on every seed.
+
+\subsection{Tier-2 Multi-Seed Results}
+
+Table~\ref{tab:tier2_multi_seed} reports the five-seed performance summary
+for all four Tier-2 models plus the Random Forest tabular control and two
+GRU+RF ensembles.  All deep-learning numbers are derived from
+\texttt{outputs/tables/tier2\_multi\_seed\_results\_summary.csv}
+(35~per-seed rows aggregated to 7~model rows).
 
 \begin{table}[H]
 \centering
-\caption{Performance comparison of all models on the patient-wise test set
-(sorted by ROC-AUC). Best values per metric in \textbf{bold}.}
-\label{tab:results}
+\caption{Tier-2 multi-seed ROC-AUC summary across 5 seeds
+$\{42, 43, 44, 45, 46\}$ under identical training and evaluation protocol
+(20~epochs, lr\,=\,$5\!\times\!10^{-4}$, grad\_clip\,=\,1.0,
+Platt-calibrated).  ``CI~lo (mean)'' is the mean of per-seed patient-cluster
+bootstrap 95\% lower bounds.  All four deep architectures sit
+indistinguishably at chance.}
+\label{tab:tier2_multi_seed}
 \small
-\begin{tabular}{lccccccc}
+\begin{tabular}{lcccc}
 \toprule
-\textbf{Model} & \textbf{Acc} & \textbf{Prec} & \textbf{Rec} & \textbf{F1}
-  & \textbf{ROC-AUC} & \textbf{PR-AUC} & \textbf{Brier} \\
+\textbf{Model} & \textbf{AUC mean\,$\pm$\,std} & \textbf{min\,--\,max}
+  & \textbf{CI lo (mean)} & \textbf{CI hi (mean)} \\
 \midrule
-GRU (2-layer)       & 0.483 & 0.481 & \textbf{0.918} & 0.632 & \textbf{0.717} & \textbf{0.773} & 0.225 \\
-Ensemble (60\%\,GRU) & 0.726 & 0.823 & 0.549 & \textbf{0.659} & 0.653 & 0.762 & \textbf{0.221} \\
-Ensemble (avg)      & \textbf{0.726} & \textbf{0.839} & 0.535 & 0.654 & 0.651 & 0.758 & 0.223 \\
-Random Forest       & 0.678 & 0.854 & 0.402 & 0.547 & 0.633 & 0.724 & 0.254 \\
-XGBoost             & 0.612 & 0.812 & 0.255 & 0.388 & 0.581 & 0.654 & 0.312 \\
-Logistic Reg.       & 0.543 & 0.523 & 0.588 & 0.554 & 0.578 & 0.658 & 0.313 \\
-CNN (3-layer)       & 0.483 & 0.475 & 0.694 & 0.564 & 0.520 & 0.530 & 0.320 \\
+GRU (2-layer)            & 0.510\,$\pm$\,0.065 & 0.428\,--\,0.604 & 0.365 & 0.655 \\
+LSTM (2-layer)           & 0.464\,$\pm$\,0.092 & 0.398\,--\,0.620 & 0.300 & 0.624 \\
+RNN (2-layer, tanh)      & 0.467\,$\pm$\,0.049 & 0.414\,--\,0.539 & 0.359 & 0.541 \\
+CNN (3-layer)            & 0.468\,$\pm$\,0.102 & 0.353\,--\,0.619 & 0.282 & 0.647 \\
+\midrule
+Random Forest (tabular)  & 0.493\,$\pm$\,0.066 & 0.413\,--\,0.590 & ---   & ---   \\
+Ensemble (avg)           & 0.490\,$\pm$\,0.061 & ---              & ---   & ---   \\
+Ensemble (60\%\,GRU)     & 0.489\,$\pm$\,0.057 & ---              & ---   & ---   \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Key Observations}
+\subsection{Key Tier-2 Observations}
 
-\begin{enumerate}[nosep]
-  \item \textbf{GRU dominates in discrimination.}  The two-layer GRU achieves
-        the highest ROC-AUC (0.717) and PR-AUC (0.773), outperforming the best
-        tabular model (RF ROC-AUC\,=\,0.633) by 8.4 percentage points.  For
-        reference, the no-skill PR-AUC baseline equals the positive-class
-        prevalence in the test set (0.482), so all models exceed chance.  This
-        confirms that end-to-end learning from raw sequences captures
-        predictive patterns missed by hand-crafted features.
-
-  \item \textbf{Ensemble improves calibration and precision.}  Combining GRU
-        probabilities with RF predictions (60\%\,GRU\,+\,40\%\,RF) yields the
-        best F1 (0.659) and Brier score (0.221), improving precision from
-        48.1\% to 82.3\% at the cost of recall (91.8\%\,$\to$\,54.9\%).
-
-  \item \textbf{CNN fails on sequence-only data.}  Near-random AUC
-        (0.520) indicates that local convolutional patterns do not capture the
-        relevant temporal dynamics under full training settings.  The CNN's
-        receptive field, even with three pooling layers, may be too narrow to
-        model the slow-evolving physiological changes preceding exacerbations.
-
-  \item \textbf{Sequence-only models fall far below multimodal fusion.}
-        The smartwatch-only GRU (AUC\,=\,0.581 in the ablation experiment)
-        scores $-$0.349 below the full multimodal GRU (AUC\,=\,0.930),
-        confirming that clinical co-modalities—not architectural
-        complexity—are the primary driver of discrimination gain.
-
-  \item \textbf{Tabular baselines are moderate but limited.}  All three
-        Tier-1 models cluster between AUC~0.578 and 0.633, with engineered
-        features providing a useful but incomplete representation.
-
-  \item \textbf{High inter-patient variance.}  5-fold GroupKFold CV for the RF
-        shows AUC ranging from 0.37 to 0.91, confirming that exacerbation
-        patterns vary substantially between individuals.  This motivates
-        personalized or multi-task modeling in future work.
-\end{enumerate}
+The four Tier-2 architectures produce multi-seed ROC-AUC means in
+$[0.464, 0.510]$, with per-seed bootstrap 95\% lower bounds that cross
+$0.5$ for every model.  The largest mean gap between any two
+architectures (GRU $0.510$ vs.\ LSTM $0.464$, $\Delta\!=\!0.046$) is
+comfortably inside one standard deviation and within the seed-induced
+spread of either model individually.  GRU\,+\,RF ensembles land at the
+component average (AUC$\,\approx\,0.49$) and add nothing.  We therefore
+conclude that, at $n_\text{patients}{=}18$, architecture choice is not
+the limiting factor on raw smartwatch sensors---no recurrent or
+convolutional inductive bias rescues sequence-only modelling, and any
+ranking of these four models is not statistically meaningful.
 
 % ============================================================
 \section{Model Analysis and Robustness}\label{sec:analysis}
 % ============================================================
 
-\subsection{Threshold Tuning}\label{sec:threshold}
+\subsection{Reproducibility Infrastructure}
 
-Given class imbalance and asymmetric clinical costs—missed exacerbations
-carry greater risk than false alarms—we evaluate model performance across
-decision thresholds rather than relying solely on a fixed threshold of~0.5.
-The GRU's default threshold maximizes recall (91.8\%) but at the cost of
-precision (48.1\%).  We perform systematic threshold analysis to identify
-operating points suitable for different clinical scenarios:
+All results in this report are produced by a single orchestration script,
+\texttt{scripts/run\_full\_pipeline.py}, which sequences:
+(1)~label regeneration from the canonical weekly-questionnaire OR-of-flags
+definition, (2)~a three-probe leakage audit (described below), (3)~Tier-2
+multi-seed training, (4)~Tier-3 multi-seed architecture$\times$modality
+sweep, (5)~headline aggregation, and (6)~environment capture
+(\texttt{env\_info.json}: Python~3.12.13, NumPy~2.0.2, PyTorch~2.4.0+cu121,
+sklearn~1.5.1, XGBoost~2.1.0, Tesla~T4 GPU).  PyTorch determinism flags are
+set
+(\texttt{PYTHONHASHSEED}\,=\,42, \texttt{CUBLAS\_WORKSPACE\_CONFIG}\,=\,:4096:8,
+\texttt{torch.use\_deterministic\_algorithms(True, warn\_only=True)}) so that
+re-running the script on the same hardware reproduces every reported number
+bit-for-bit per seed.
 
-\begin{table}[H]
-\centering
-\caption{GRU operating points at different decision thresholds.}
-\label{tab:thresholds}
-\small
-\begin{tabular}{lcccc}
-\toprule
-\textbf{Operating Point} & \textbf{Threshold} & \textbf{Precision} &
-  \textbf{Recall} & \textbf{F1} \\
-\midrule
-Default (0.50)            & 0.500 & 0.481 & 0.918 & 0.632 \\
-Best F1                   & 0.525 & 0.539 & 0.798 & 0.653 \\
-FPR-controlled            & 0.531 & 0.719 & 0.550 & 0.623 \\
-\bottomrule
-\end{tabular}
-\end{table}
+\subsection{Leakage Audit}\label{sec:leakage}
 
-The Best-F1 threshold (0.525) achieves a slight improvement in F1 (0.653 vs.\
-0.632) by trading recall (91.8\% $\to$ 79.8\%) for precision (48.1\% $\to$
-53.9\%).  The FPR-controlled threshold (0.531) dramatically improves precision
-to 71.9\% while maintaining clinically useful recall (55.0\%).  In a
-real-world deployment, the choice of threshold would depend on whether the
-system prioritizes sensitivity (to catch all exacerbations) or specificity (to
-minimize alarm fatigue).
-
-\subsection{Feature Importance Analysis}
-
-The Random Forest's top-5 features by mean decrease in impurity are:
+To guard against the subtle label-leakage failure modes documented in
+small-cohort wearable studies, every full pipeline run executes three
+probes \emph{before} model training proceeds:
 
 \begin{enumerate}[nosep]
-  \item HR standard deviation (8.4\%) — captures heart-rate variability
-        changes.
-  \item Night HR mean (6.0\%) — elevated nighttime HR may signal respiratory
-        distress.
-  \item Night step sum (6.0\%) — increased nighttime movement suggesting
-        sleep disruption.
-  \item Intensity standard deviation (5.5\%) — variability in activity
-        intensity.
-  \item Intensity max (5.1\%) — peak activity-intensity level.
+  \item \textbf{Shuffled-label probe.}  Random Forest is retrained on
+        labels randomly permuted within the training set.  A model that
+        finds signal here is exploiting metadata leakage.  Threshold:
+        ROC-AUC\,$\leq$\,0.60.  Observed: \textbf{0.495}~\textit{(pass)}.
+  \item \textbf{OR-recovery probe.}  An auxiliary classifier is trained to
+        recover the weekly OR-of-flags label from its 5 constituent flags
+        (\texttt{doc}, \texttt{hospital}, \texttt{er}, \texttt{oral},
+        \texttt{symptom}) to verify the label-construction pipeline is
+        functioning.  Threshold: AUC\,$\geq$\,0.95.  Observed:
+        \textbf{1.000}~\textit{(pass)}.
+  \item \textbf{Horizon probe.}  Every window's labelling-questionnaire
+        timestamp is checked to be \emph{strictly forward} in time (no
+        same-day matches, no backward matches) and within the
+        \texttt{tolerance\,=\,7\,days} window.  Threshold:
+        $0$~violations.  Observed: \textbf{0 violations}~\textit{(pass)}.
 \end{enumerate}
 
-The dominance of HR variability and nighttime features is consistent with
-clinical literature: nocturnal symptoms and autonomic changes are established
-markers of worsening asthma control~\cite{bourdin2019}.
+The pipeline aborts if any probe fails.  Probe results are written to
+\texttt{outputs/tables/leakage\_probe.csv} alongside the headline table for
+post-hoc audit.
 
-\subsection{Ensemble Analysis}
+\subsection{Multi-Seed Protocol Details}\label{sec:multi-seed-detail}
 
-We evaluated two ensemble strategies combining GRU and Random Forest
-predictions on the same test set:
+Every Tier-2 and Tier-3 row in the report is the aggregate of five
+independent runs across seeds $\{42, 43, 44, 45, 46\}$.  Each seed drives
+\texttt{GroupShuffleSplit}, all RNGs, and weight initialisation.  We report
+mean\,$\pm$\,std across seeds.  In addition, for each (model, seed) pair we
+compute a patient-cluster bootstrap 95\% confidence interval on test ROC-AUC
+by resampling whole patients (with replacement) from the test set
+$n{=}1{,}000$ times.  We do \emph{not} bootstrap windows---adjacent windows
+share 95.8\% of their data and bootstrapping them produces optimistic CI
+widths.  We report ``mean CI lower bound'' and ``mean CI upper bound''
+across seeds.  Differences smaller than the seed-induced standard deviation
+(${\sim}0.05$--$0.10$ AUC) should not be interpreted as ranking evidence.
 
-\begin{itemize}[nosep]
-  \item \textbf{Average ensemble} (50\%\,GRU + 50\%\,RF): F1\,=\,0.654,
-        AUC\,=\,0.651, Brier\,=\,0.223.
-  \item \textbf{Weighted ensemble} (60\%\,GRU + 40\%\,RF): F1\,=\,0.659,
-        AUC\,=\,0.653, Brier\,=\,\textbf{0.221} (best calibration).
-\end{itemize}
+\subsection{Effective Sample Size}\label{sec:effective_n}
 
-The ensemble benefits from model diversity: the GRU captures temporal
-dynamics from raw minute-level sequences, while the RF operates on aggregated
-statistical features, producing complementary error patterns.  Probability
-averaging smooths extreme predictions from either model and reduces
-overconfidence, which is reflected in the improved Brier scores.
-Both ensembles trade GRU recall for RF precision, producing models with
-balanced precision–recall profiles.  The weighted ensemble achieves the best
-Brier score across all models, indicating superior probability calibration.
-The 60/40 weighting reflects the GRU's superior standalone AUC rather than
-being optimized on the test set.  However, the ensembles do not surpass the
-standalone GRU in terms of discrimination (AUC), consistent with the
-observation that combining a strong model with a weaker one can dilute ranking
-performance while improving point-estimate quality.
+Adjacent windows share 95.8\% of their data (24-hour window, 1-hour
+stride).  The nominal $31{,}124$ labelled windows therefore correspond to
+approximately ${\sim}1{,}900$ \emph{independent} observations across
+$18$~patients.  Patient-cluster bootstrapping (above) honestly reflects
+this; per-window bootstrap or standard t-tests over the window count would
+overstate certainty.  All comparisons and significance claims in this
+report should be interpreted at the patient level.
 
-\subsection{Robustness Concerns}
+\subsection{Calibration via Platt Scaling}\label{sec:platt}
 
-\paragraph{Small cohort and single split.}
-With only 18~patients (the split placing ${\sim}4$--5 in the test set),
-results are sensitive to which patients happen to be in train vs.\ test.
-All reported metrics come from a single patient-wise split (seed\,=\,42).
-Bootstrap 95\% confidence intervals ($n{=}1{,}000$ resamples, seed\,=\,42)
-are computed via percentile bootstrap on the test set.  A locally reproducible
-run (GRU seed\,=\,8) yields GRU AUC\,=\,0.665 [0.655,\,0.675] and
-CNN AUC\,=\,0.582 [0.572,\,0.593].  The within-run CI width is
-${\sim}0.020$, but inter-run variation due to initialisation sensitivity
-(GRU spans 0.394--0.665 across random seeds) exceeds this, so differences
-smaller than ${\sim}0.05$ are not statistically distinguishable.  The
-originally reported GRU AUC of 0.717 was obtained on Colab and reflects a
-favourable initialisation; the ${\sim}0.05$ gap relative to the local
-result is within this noise floor.
+The patient-wise split produces a training positive rate of 22.5\% and a
+test positive rate of 48.2\%---a consequence of the small cohort and
+patient-level splitting.  This shift inflates F1 at $\tau{=}0.5$, PR-AUC,
+and Brier score on the test set.  ROC-AUC is approximately invariant to
+prevalence and is the recommended primary metric.
 
-\paragraph{Effective sample size.}
-Adjacent windows share 95.8\% of their data (24-hour window, 1-hour stride).
-The reported ${\sim}31{,}000$ windows correspond to approximately
-${\sim}1{,}900$ \emph{independent} observations.  All reported model
-comparisons and significance claims should be interpreted in light of
-this effective sample size, not the nominal window count.
+Uniformly across \emph{all} Tier-2 and Tier-3 deep models, we fit Platt
+scaling (a single logistic regression with $C{=}1.0$) on the validation-set
+probabilities for each seed, then apply that fitted mapping to the
+test-set probabilities.  This corrects the prevalence shift without
+touching the underlying ranking.  No Tier-2 vs.\ Tier-3 cross-protocol
+inconsistency remains: the protocols are identical except for the
+co-modality input.
 
-\paragraph{Train/test prevalence shift.}
-The patient-wise split results in different positive rates between train
-(22.5\%) and test (48.2\%) sets---a consequence of the small cohort and
-patient-level splitting.  This shift inflates PR-AUC, Brier score, and
-F1 on the test set relative to a balanced deployment setting.  ROC-AUC
-is approximately invariant to prevalence and is the recommended primary
-metric.  Platt scaling is applied only to Tier-3 multimodal models; Tier-1
-and Tier-2 evaluations use raw model probabilities, introducing a calibration
-inconsistency across tiers.
+\subsection{Per-Patient Variability}
 
-\paragraph{Cross-validation on the full dataset.}
-The 5-fold GroupKFold cross-validation for Tier-1 models was run on the
-full dataset including test-set patients.  The resulting fold AUC estimates
-(range: 0.37--0.91) reflect inter-patient variance only and are not valid
-held-out performance estimates; they should not be compared directly with the
-held-out test results.
+Per-seed AUC ranges of $\pm$0.05--$\pm$0.10 across all Tier-2 architectures
+and across most Tier-3 configurations track which $\sim$\,4 patients land
+in each seed's test split rather than which architecture is trained.  Any
+single-seed point estimate is therefore one draw from a wide distribution;
+the multi-seed mean is the appropriate summary.  Personalisation (future
+work) is the natural response to this variability, but is only meaningful
+in a cohort large enough to fit per-user heads---a condition AAMOS-00
+does not satisfy.
 
-\paragraph{Cross-protocol comparisons.}
-The Tier-2 GRU (full-run: subsample\,=\,5, 20~epochs, no Platt scaling,
-ROC-AUC\,=\,0.717) and the Tier-3 multimodal ablation (fast-run:
-subsample\,=\,10, 10~epochs, with Platt scaling) were trained under
-different settings.  These protocols are not directly comparable; the
-$+$0.349 gain reported in the ablation is a within-experiment comparison
-(\texttt{Full} vs.\ \texttt{SW\_only}).
-
-\paragraph{Multimodal reproducibility.}
-The raw co-modality data files (smart inhaler logs, peak-flow records,
-daily questionnaire responses, weekly questionnaire scores) are not
-included in the local repository.  Tier-3 multimodal results cannot be
-reproduced without access to the full AAMOS-00 dataset release from the
-original data repository.
-
-\paragraph{Window overlap.}
-Adjacent windows (1-hour stride over 24-hour duration) share 95.8\% of their
-data, creating redundancy within each user.  This does not leak across the
-train/test boundary (patient-wise split), but inflates effective sample counts
-and may bias variance estimates.
+A separate, audit-driven note on protocol: an internal GRU run produced
+earlier in the project reported a notably higher AUC under a single fixed
+\texttt{GroupShuffleSplit} seed.  Re-reading that pipeline shows the
+training loop used the held-out test set as the validation signal for
+early stopping and best-epoch model selection, then reported test metrics
+on the same partition.  The label rule, horizon, and feature pipeline
+were otherwise identical to the current code.  Removing this selection
+leak---not any change to the labelling rule---accounts for the bulk of
+the gap between that earlier number and the multi-seed
+ROC-AUC\,$=\,0.510\pm0.065$ reported in Table~\ref{tab:tier2-multiseed};
+the residual variance is attributable to the 5-seed protocol replacing a
+single split.
 
 % ============================================================
 \section{Efficiency and Scalability}\label{sec:efficiency}
@@ -632,73 +646,86 @@ and may bias variance estimates.
 
 \begin{table}[H]
 \centering
-\caption{Model complexity and training efficiency (CPU only).}
+\caption{Model complexity and training efficiency (Colab T4 GPU for all
+Tier-2 / Tier-3 deep models).  Per-run training times are per (model,
+seed).}
 \label{tab:efficiency}
 \small
 \begin{tabular}{lrrr}
 \toprule
 \textbf{Model} & \textbf{Parameters} & \textbf{Input Shape} &
-  \textbf{Train Time} \\
+  \textbf{Train Time / seed} \\
 \midrule
 Logistic Regression & 30 &  $29$ features & $<$1\,s \\
 Random Forest       & -- (200 trees) & $29$ features & ${\sim}5$\,s \\
 XGBoost             & -- (100 trees) & $29$ features & ${\sim}3$\,s \\
-GRU (2-layer)       & 38{,}465 & $288 \times 4$ & ${\sim}5$\,min \\
-CNN (3-layer)       & 73{,}377 & $1{,}440 \times 4$ & ${\sim}4.8$\,min \\
+GRU (2-layer)       & 38{,}465 & $288 \times 4$ & ${\sim}1$\,min \\
+LSTM (2-layer)      & 51{,}201 & $288 \times 4$ & ${\sim}1.2$\,min \\
+RNN (2-layer, tanh) & 12{,}993 & $288 \times 4$ & ${\sim}0.8$\,min \\
+CNN (3-layer)       & 73{,}377 & $1{,}440 \times 4$ & ${\sim}1.5$\,min \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-All experiments were conducted on CPU (no GPU acceleration).  The GRU's
-subsampling strategy (factor of~5) reduces the effective sequence length from
-1{,}440 to 288 without degrading performance—in fact, the GRU outperforms the
-CNN which processes the full sequence.  This suggests that 5-minute resolution
-captures sufficient temporal dynamics for exacerbation prediction, an important
-finding for potential deployment on resource-constrained wearable devices.
-
-The tabular baselines train in seconds but require a separate feature
-engineering step; the deep models train in minutes but operate end-to-end.  For
-real-time inference, both the GRU (38K parameters) and CNN (73K parameters) are
-small enough for edge deployment on modern smartwatch processors.
+All Tier-2 and Tier-3 deep models train on a Tesla~T4 GPU under the same
+20-epoch budget.  The recurrent variants' 5$\times$ subsampling (1{,}440
+$\to$ 288 timesteps) preserves the long-range physiological context while
+keeping all three recurrent backbones small enough (13K--51K parameters)
+for potential edge deployment on modern smartwatch processors.
 
 % ============================================================
-\section{Multimodal Fusion Modeling}\label{sec:multimodal}
+\section{Tier-3: Multimodal Fusion Sweep}\label{sec:multimodal}
 % ============================================================
+
+\subsection{Motivation}
+
+Tier-2 isolates the question of \emph{architecture} on raw smartwatch
+sensors and answers it negatively: no recurrent or convolutional variant
+discriminates above chance under the multi-seed protocol.  Tier-3
+isolates the question of \emph{modality}: which clinical co-signal, if
+any, raises the smartwatch-only baseline?  To rule out the alternative
+explanation that the best modality combination only works under a single
+favourable architecture, Tier-3 runs a full \emph{architecture\,$\times$\,modality}
+factorial sweep.
 
 \subsection{Architecture}
 
-We implement an \textbf{intermediate-fusion GRU} that combines the
-smartwatch minute-level sequence with tabular features derived from clinical
-co-modalities (smart inhaler, peak-flow meter, and questionnaires).
+We implement an \textbf{intermediate-fusion} recurrent classifier
+generalised across three recurrent cell types.  The same fusion topology
+is reused for GRU, LSTM, and vanilla RNN backbones; only the recurrent
+cell changes.
 
 \begin{figure}[H]
 \centering
 \small
 \begin{tabular}{l}
-\textbf{Sequence branch} \\
-Smartwatch: (batch, 288, 4) $\xrightarrow{\text{GRU}(h{=}64,\,L{=}2)}$ $h_T$ \in $\mathbb{R}^{64}$ \\[4pt]
+\textbf{Sequence branch} (cell $\in \{$GRU, LSTM, RNN$\}$) \\
+Smartwatch: (batch, 288, 4) $\xrightarrow{\text{Cell}(h{=}64,\,L{=}2,\,\text{drop}{=}0.3)}$ $h_T \in \mathbb{R}^{64}$ \\[4pt]
 \textbf{Tabular branch} (omitted when $K=0$) \\
-Clinical features: (batch, $K$) $\xrightarrow{K \to 64 \to 32,\;\text{ReLU, Dropout}}$ $\mathbf{z}_\text{tab}$ \in $\mathbb{R}^{32}$ \\[4pt]
+Clinical features: (batch, $K$) $\xrightarrow{K \to 64 \to 32,\;\text{ReLU, Dropout}}$ $\mathbf{z}_\text{tab} \in \mathbb{R}^{32}$ \\[4pt]
 \textbf{Fusion} \\
 $[\,h_T\,\|\,\mathbf{z}_\text{tab}\,] \in \mathbb{R}^{96}$ (or $\mathbb{R}^{64}$ for SW-only) $\xrightarrow{\text{Linear}(1)}$ logit
 \end{tabular}
-\caption{Intermediate-fusion GRU architecture. The sequence is subsampled by
-$5\times$ (1\,440 $\to$ 288 steps) to reduce memory and compute.}
+\caption{Generic intermediate-fusion recurrent classifier used across all
+three architectures.  The recurrent cell is the only architectural
+difference between rows of the same modality subset.}
 \label{fig:fusion_arch}
 \end{figure}
 
 \noindent\textbf{Training details.}
-BCEWithLogitsLoss with $\text{pos\_weight}=3.43$ (computed from training-set
-class counts) is used for all configs to address the 22.5\% training positive
-rate.  Adam optimiser ($\text{lr}=10^{-3}$, $\text{weight\_decay}=10^{-4}$)
-with early stopping (patience\,=\,5) on validation loss.  Platt scaling is
-fitted on validation-set probabilities and applied to all test-set
-evaluations to correct the train$\to$test prevalence shift
-(22.5\%$\to$48.2\%).
+Identical to Tier-2: \texttt{BCEWithLogitsLoss} with
+\texttt{pos\_weight}\,=\,$\text{neg}/\text{pos}$, Adam
+(lr\,=\,$5\!\times\!10^{-4}$, \texttt{weight\_decay}\,=\,$10^{-4}$),
+20~epochs, patience\,=\,5, grad\_clip\,=\,1.0, subsample\,=\,5
+(1{,}440\,$\to$\,288 timesteps).  Recurrent layers are initialised
+identically to Tier-2 (Xavier $W_{ih}$, orthogonal $W_{hh}$, forget-gate
+bias\,=\,1 for GRU and LSTM).  Platt scaling fit on validation
+probabilities is applied to test probabilities for every (arch, subset,
+seed) cell.
 
-\subsection{Tabular Feature Construction}
+\subsection{Tabular Feature Construction (Co-Modalities)}
 
-$K=90$ tabular features are built from three co-modalities:
+Tabular features are built from three co-modalities recorded in AAMOS-00:
 
 \begin{itemize}[nosep]
   \item \textbf{Smart inhaler} (6 features): daily reliever-use count,
@@ -706,69 +733,73 @@ $K=90$ tabular features are built from three co-modalities:
         indicators.
   \item \textbf{Peak-flow meter} (15 features): AM/PM PEF, morning dip,
         week-level PEF statistics, and missing indicators.
-  \item \textbf{Daily questionnaire} (3 features): composite worsening score
-        and temporal recency encoding.
   \item \textbf{Weekly questionnaire + patient static} (66 features):
         ACQ/AQLQ domain scores, demographic indicators, and binary flags
         for all missing entries.
 \end{itemize}
 
-All tabular features are z-score-standardised using training-set statistics
-only.  Missing values are filled with sentinel $-1$ prior to standardisation;
-a paired binary indicator column flags each imputed entry.
+All tabular features are z-score standardised using training-set
+statistics only.  Missing values are filled with sentinel $-1$ prior to
+standardisation; a paired binary indicator column flags each imputed
+entry.
 
-\subsection{Ablation Experiment Design}
+\textbf{Daily-questionnaire features have been deliberately excluded.}
+The canonical weekly OR-of-flags label is itself derived from
+questionnaire responses; including any subset of daily-questionnaire
+features in the input creates a direct path from a near-replica of the
+label into the input.  Configurations of that form are excluded
+upstream by the leakage audit
+(Section~\ref{sec:leakage}).
 
-Five cumulative ablation configurations are evaluated, each adding one
-additional co-modality group to the smartwatch GRU:
+\subsection{Sweep Design}
 
-\begin{table}[H]
-\centering
-\caption{Ablation configurations and tabular feature dimensions.}
-\label{tab:ablation_configs}
-\small
-\begin{tabular}{llr}
-\toprule
-\textbf{Config} & \textbf{Input modalities} & $K$ \\
-\midrule
-\texttt{SW\_only}               & Smartwatch sequence only           &  0 \\
-\texttt{SW\_inhaler}            & + Smart inhaler daily features     &  6 \\
-\texttt{SW\_inhaler\_pef}       & + Peak-flow meter features         & 21 \\
-\texttt{SW\_inhaler\_pef\_dailyQ} & + Daily questionnaire features   & 24 \\
-\texttt{Full}                   & + Weekly questionnaire + static    & 90 \\
-\bottomrule
-\end{tabular}
-\end{table}
+The Tier-3 sweep is a 3$\times$4 grid:
+
+\begin{itemize}[nosep]
+  \item \textbf{Architectures}: GRU, LSTM, RNN.
+  \item \textbf{Modality subsets}: \texttt{SW\_only} ($K{=}0$);
+        \texttt{SW\_inhaler} ($K{=}6$); \texttt{SW\_inhaler\_pef}
+        ($K{=}21$); \texttt{Full} ($K{=}87$ = inhaler + PEF + weekly +
+        static).
+  \item \textbf{Seeds}: $\{42, 43, 44, 45, 46\}$.
+\end{itemize}
+
+Total: 3 archs $\times$ 4 subsets $\times$ 5 seeds = \textbf{60 runs}.
+Each run yields seven test-set metrics plus a patient-cluster bootstrap
+95\% AUC CI.
 
 \subsection{Results}
 
-Table~\ref{tab:multimodal_results} reports test-set performance for all five
-configurations.  \textbf{ROC-AUC is the primary metric} because it is
-threshold-independent and robust to the train$\to$test prevalence shift.
-PR-AUC and Brier score are reported for completeness but are inflated by the
-48.2\% test-set positive rate (vs.\ 22.5\% in training).
+Table~\ref{tab:multimodal_results} reports the full sweep, sorted by mean
+ROC-AUC.  ROC-AUC is the primary metric (prevalence-invariant); ``CI~lo
+(mean)'' is the mean of per-seed patient-cluster bootstrap 95\% lower
+bounds.
 
 \begin{table}[H]
 \centering
-\caption{Multimodal ablation results on the held-out test set (13\,539
-windows, 18 patients, Platt-calibrated). F1 computed at $\tau{=}0.5$; for
-\texttt{SW\_only}–\texttt{SW\_inhaler\_pef} the model predicts all-negative at
-this threshold due to the prevalence shift (see text).}
+\caption{Tier-3 multi-seed multimodal sweep on the held-out test set
+across 5 seeds, sorted by mean ROC-AUC.
+Three recurrent architectures (rows) $\times$ four cumulative modality
+subsets give 12 configurations.}
 \label{tab:multimodal_results}
 \small
-\begin{tabular}{lrrrrrrr}
+\begin{tabular}{llcccc}
 \toprule
-\textbf{Config} & $K$ &
-  \textbf{ROC-AUC} & \textbf{PR-AUC} & \textbf{F1} &
-  \textbf{Precision} & \textbf{Recall} & \textbf{Brier} \\
+\textbf{Arch} & \textbf{Modality subset} & $K$
+  & \textbf{AUC mean\,$\pm$\,std} & \textbf{min\,--\,max} & \textbf{CI lo (mean)} \\
 \midrule
-\texttt{SW\_only}               & 0  & 0.581 & 0.552 & 0.000 & --- & 0.000 & 0.426 \\
-\texttt{SW\_inhaler}            & 6  & 0.791 & 0.831 & 0.000 & --- & 0.000 & 0.399 \\
-\texttt{SW\_inhaler\_pef}       & 21 & 0.750 & 0.801 & 0.000 & --- & 0.000 & 0.399 \\
-\texttt{SW\_inhaler\_pef\_dailyQ} & 24 & 0.913 & 0.933 & 0.688 & 0.989 & 0.528 & 0.205 \\
-\texttt{Full}                   & 90 & \textbf{0.930} & \textbf{0.954} & \textbf{0.871} & 0.997 & 0.774 & \textbf{0.107} \\
-\midrule
-GRU baseline (Tier-2)           &  0 & 0.717 & 0.773 & 0.645 & 0.673 & 0.619 & 0.220 \\
+LSTM & SW\,+\,inhaler\,+\,PEF & 21 & \textbf{0.634\,$\pm$\,0.062} & 0.553\,--\,0.713 & 0.355 \\
+RNN  & SW\,+\,inhaler         &  6 & 0.623\,$\pm$\,0.086 & 0.480\,--\,0.706 & 0.359 \\
+LSTM & SW\,+\,inhaler         &  6 & 0.614\,$\pm$\,0.080 & 0.475\,--\,0.689 & 0.371 \\
+RNN  & SW\,+\,inhaler\,+\,PEF & 21 & 0.595\,$\pm$\,0.105 & 0.434\,--\,0.715 & 0.345 \\
+LSTM & Full                   & 87 & 0.592\,$\pm$\,0.201 & 0.345\,--\,0.857 & 0.275 \\
+GRU  & Full                   & 87 & 0.591\,$\pm$\,0.157 & 0.380\,--\,0.785 & 0.308 \\
+GRU  & SW\,+\,inhaler\,+\,PEF & 21 & 0.591\,$\pm$\,0.087 & 0.456\,--\,0.692 & 0.350 \\
+GRU  & SW\,+\,inhaler         &  6 & 0.587\,$\pm$\,0.070 & 0.493\,--\,0.685 & 0.357 \\
+RNN  & Full                   & 87 & 0.540\,$\pm$\,0.213 & 0.295\,--\,0.831 & 0.255 \\
+GRU  & SW\,only               &  0 & 0.531\,$\pm$\,0.070 & 0.460\,--\,0.633 & 0.379 \\
+RNN  & SW\,only               &  0 & 0.482\,$\pm$\,0.024 & 0.450\,--\,0.510 & 0.339 \\
+LSTM & SW\,only               &  0 & 0.456\,$\pm$\,0.070 & 0.380\,--\,0.550 & 0.293 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -776,74 +807,188 @@ GRU baseline (Tier-2)           &  0 & 0.717 & 0.773 & 0.645 & 0.673 & 0.619 & 0
 \noindent\textbf{Key findings.}
 
 \begin{itemize}[nosep]
-  \item \textbf{Smartwatch alone is insufficient.}  The sequence-only GRU
-        (\texttt{SW\_only}) achieves ROC-AUC\,=\,0.581, only marginally above
-        chance, confirming that physiological signals from wearables alone are
-        insufficient for reliable exacerbation prediction in this cohort.
+  \item \textbf{Modality dominates architecture.}  The four
+        smallest-AUC rows are exactly the four \texttt{SW\_only}
+        configurations (one is the LSTM, one is the RNN, one is the
+        GRU; the fourth slot is occupied by the 87-feature \texttt{Full}
+        configurations, which are unstable for separate reasons,
+        see below).  The four largest-AUC rows are
+        \texttt{SW\,+\,inhaler} or \texttt{SW\,+\,inhaler\,+\,PEF}
+        across \emph{all three} architectures.  No architecture-only
+        manipulation produces this jump; no modality-only manipulation
+        leaves it absent.
 
-  \item \textbf{Smart-inhaler use is the strongest single co-modality.}
-        Adding only six inhaler features jumps ROC-AUC to 0.791
-        ($+$0.210), demonstrating that reliever-medication behaviour is a
-        clinically actionable leading indicator of impending exacerbation.
+  \item \textbf{Smart-inhaler use is the most informative single
+        co-modality.}  Adding only 6 inhaler-derived tabular features
+        raises mean AUC by approximately
+        $+$0.10--$+$0.17 across all three recurrent backbones (GRU
+        0.531\,$\to$\,0.587; LSTM 0.456\,$\to$\,0.614; RNN
+        0.482\,$\to$\,0.623).  This cross-architecture replication is
+        the strongest defensible finding of this report:
+        reliever-medication adherence captures impending exacerbation
+        signal that raw smartwatch sensors do not.
 
-  \item \textbf{Peak-flow features add limited marginal value alone.}
-        \texttt{SW\_inhaler\_pef} (ROC-AUC\,=\,0.750) dips slightly from the
-        inhaler-only config, likely due to the 42.6\% missing rate for
-        peak-flow readings degrading the benefit of the additional features at
-        this training budget.
+  \item \textbf{Peak-flow adds marginal, non-uniform benefit.}  Adding
+        15 PEF features on top of \texttt{SW\,+\,inhaler} helps the LSTM
+        (0.614\,$\to$\,0.634) but slightly hurts or barely changes the
+        GRU (0.587\,$\to$\,0.591) and RNN (0.623\,$\to$\,0.595).  PEF
+        adherence is poor (high missing rate) and the marginal benefit
+        likely does not survive a larger cohort; we do not claim it.
 
-  \item \textbf{Daily questionnaires provide the largest single-step gain.}
-        Adding the composite symptom-worsening score (\texttt{dailyQ},
-        $K{=}3$ extra features) raises ROC-AUC from 0.750 to
-        0.913\,($+$0.163), despite an 84.4\% missing rate, because the
-        entries that \emph{are} present are highly discriminative.
+  \item \textbf{Top performer: LSTM with smartwatch + inhaler + PEF.}
+        Mean AUC\,=\,$0.634 \pm 0.062$ across 5 seeds; per-seed range
+        0.553--0.713; mean patient-cluster CI lower bound 0.355.  The
+        lower bound crossing 0.5 in some seeds confirms this is a
+        suggestive, not a fully-powered, result.
 
-  \item \textbf{Full multimodal fusion achieves ROC-AUC\,=\,0.930.}
-        The complete model ($K{=}90$) yields ROC-AUC\,=\,0.930,
-        PR-AUC\,=\,0.954, F1\,=\,0.871, and Brier\,=\,0.107—a substantial
-        improvement of $+$0.349 ROC-AUC over the smartwatch-only baseline
-        (\texttt{SW\_only}, AUC\,=\,0.581) in the same ablation experiment.
-        For reference, the separately trained Tier-2 GRU achieved
-        ROC-AUC\,=\,0.717 under full training settings and no Platt scaling;
-        the two settings are not directly comparable.
-
-  \item \textbf{F1 collapse for low-modality configs.}
-        \texttt{SW\_only}, \texttt{SW\_inhaler}, and \texttt{SW\_inhaler\_pef}
-        predict all-negative at $\tau{=}0.5$, driven by the 22.5\%$\to$48.2\%
-        prevalence shift between training and test sets.  Platt scaling
-        partially corrects calibration but does not fully bridge a
-        2$\times$ prevalence gap for models with weaker discriminative power.
-        ROC-AUC remains the appropriate comparison metric.
+  \item \textbf{Adding more than 21 features destabilises the fusion
+        model at $n_\text{patients}{=}18$.}  Across all three
+        architectures the \texttt{Full} 87-feature subset shows the
+        largest seed-to-seed standard deviation
+        (LSTM~$\sigma{=}0.20$, GRU~$\sigma{=}0.16$, RNN~$\sigma{=}0.21$),
+        compared with $\sigma\!\approx\!0.06$--$0.10$ on the 21-feature
+        subset.  The high-dimensional weekly-questionnaire and static
+        features add capacity that the cohort cannot stably support;
+        the 21-feature SW\,+\,inhaler\,+\,PEF subset dominates the
+        87-feature subset on the mean in every architecture.  This
+        observation directly motivates the comprehensive improvement
+        sweep in Section~\ref{sec:improvement_sweep}: at this cohort
+        size, additional model capacity is not the right axis to push.
 \end{itemize}
 
-\subsection{Limitations}
+% ============================================================
+\section{Comprehensive Improvement Sweep}\label{sec:improvement_sweep}
+% ============================================================
+
+To test whether the Tier-3 baseline of $0.634\pm0.062$ could be improved
+by preprocessing, architecture, or modelling-paradigm changes, we ran a
+broad sweep of seven candidate improvements under the same multi-seed
+protocol, the same patient-cluster bootstrap, and the same Platt
+calibration as the baseline.  The aggregated results are written to
+\texttt{outputs/tables/experiment\_comparison.csv}; the top of the table
+is reproduced as Table~\ref{tab:experiment_comparison} below.
+
+\begin{table}[H]
+\centering
+\caption{Comprehensive improvement sweep, sorted by multi-seed mean
+ROC-AUC.  $\Delta$ is the difference from the locked Tier-3 baseline
+(LSTM\,+\,SW\,+\,inhaler\,+\,PEF at $0.634\pm0.062$).  No candidate beats
+the baseline at the 1-$\sigma$ level.  Full table:
+\texttt{outputs/tables/experiment\_comparison.csv}.}
+\label{tab:experiment_comparison}
+\small
+\begin{tabular}{llcr}
+\toprule
+\textbf{Experiment} & \textbf{Family} & \textbf{AUC mean\,$\pm$\,std} & \textbf{$\Delta$ vs.\ baseline} \\
+\midrule
+LSTM SW\,+\,inhaler\,+\,PEF (locked baseline) & Baseline             & 0.634\,$\pm$\,0.062 & --       \\
+LSTM baseline (focused 5-seed reproducer)     & DL variants          & 0.625\,$\pm$\,0.059 & $-$0.009 \\
+LSTM\,+\,A1 per-patient normalisation         & DL variants          & 0.623\,$\pm$\,0.063 & $-$0.011 \\
+Random Forest, engineered + inhaler           & Tabular GBM/RF       & 0.582\,$\pm$\,0.079 & $-$0.052 \\
+LightGBM, engineered + inhaler                & Tabular GBM/RF       & 0.579\,$\pm$\,0.040 & $-$0.055 \\
+XGBoost, engineered + inhaler                 & Tabular GBM/RF       & 0.559\,$\pm$\,0.053 & $-$0.075 \\
+LightGBM, engineered + inhaler + PEF          & Tabular GBM/RF       & 0.553\,$\pm$\,0.066 & $-$0.081 \\
+Stacking (RF\,+\,LGB\,+\,XGB, LR meta)        & Stacking             & 0.554\,$\pm$\,0.077 & $-$0.080 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+We refer throughout to the LSTM\,+\,SW\,+\,inhaler\,+\,PEF configuration
+as the \emph{locked baseline}: ``locked'' in the sense that its
+hyperparameters, feature panel, split policy, and seed set were frozen
+before the improvement sweep began, so that all comparisons below are
+pre-registered against an unchanging reference.
+
+The seven tested improvements fall into three families:
+(i)~\textbf{preprocessing}---per-patient $z$-score normalisation
+(channels standardised per user using only that user's training
+statistics, with global fallback for unseen test patients), and a
+64-trial stratified-group split that minimises the train/test
+positive-rate gap;
+(ii)~\textbf{alternative tabular learners}---LightGBM and XGBoost
+with class-imbalance reweighting, applied to the same six cumulative
+multimodal subsets used in Tier-1; and
+(iii)~\textbf{ensembling and hybrid fusion}---a three-learner stack
+(RF\,+\,LGB\,+\,XGB combined via simple average, validation-AUC-weighted
+average, and a logistic-regression meta-learner), and a hybrid Tier-3
+which injects the 29 Tier-1 engineered features into the tabular
+branch of the LSTM fusion model.  Per-experiment configurations and
+logs are written to
+\texttt{outputs/tables/exp\_\{gbm,lightgbm,stacking,a1\_focused\}\_results.csv};
+the aggregator table
+(\texttt{outputs/tables/experiment\_comparison.csv}) collates them with
+the locked baseline.
+
+No candidate beats the baseline.  The closest contender,
+per-patient-normalised LSTM at $0.623\pm0.063$, is within $1\sigma$ of
+the baseline's own seed-induced variance.  The two preprocessing
+variants and the hybrid Tier-3 produce no measurable lift; the
+GBM\,/\,stacking family is $0.05$--$0.08$ AUC \emph{below} the
+baseline.  This pattern---no improvement is detectable across three
+independent intervention families---is in fact what we should expect at
+this cohort size: as the power analysis in
+Section~\ref{sec:limitations} makes explicit, a true $\Delta$AUC of
+$0.05$ at $n_\text{patients}{=}18$ is well below the threshold of
+statistical detection.  In that sense the improvement sweep is
+informative not because any candidate succeeded, but because their
+consistent failure-to-detect places the locked baseline's own marginal
+lift over chance in its proper, statistically humble, context.
+
+\subsection{Limitations}\label{sec:limitations}
+
+\paragraph{Power analysis: the cohort is below threshold.}
+The primary limitation is the cohort size of $n_\text{patients}{=}18$.
+Under the rough Hanley--McNeil approximation for the standard error of
+a ROC-AUC estimate at the observed prevalence and an effective sample
+size set by the $\sim$4 test patients per seed, the minimum AUC
+reliably detectable as different from chance at $\alpha\!=\!0.05$ with
+$80\%$ power is approximately $\mathbf{0.75}$.  The observed locked
+baseline of $0.634\pm0.062$ sits well below this minimum detectable
+effect, and the per-seed 95\% bootstrap lower bound crosses $0.5$ on
+individual seeds.  Equivalently: even if the multimodal smartwatch +
+smart-inhaler + peak-flow signal genuinely carries a true AUC of
+${\approx}0.63$ on the population, this dataset does not contain enough
+patients to demonstrate it.  By the same calculation, the seven
+improvement candidates of Section~\ref{sec:improvement_sweep} could not
+have been distinguished from the baseline at this cohort size unless
+they produced a $\Delta$AUC of at least ${\sim}0.12$; none did, and
+the failure is consistent with seed variance rather than evidence of
+model-capacity insufficiency.  We therefore present the locked
+baseline's value not as a clinical or even predictive result, but as a
+feasibility data-point that motivates a cohort of $n\!\gtrsim\!50$
+patients for any deployable system.
 
 \begin{itemize}[nosep]
-  \item \textbf{Prevalence shift.}  The patient-wise split produces a
-        training positive rate of 22.5\% and test positive rate of 48.2\%.
-        This imbalance inflates PR-AUC and Brier on the test set and
-        suppresses F1 at $\tau{=}0.5$ for under-powered configs.
+  \item \textbf{Small cohort.}  Only 18 patients contribute labelled
+        windows; per-seed bootstrap CI lower bounds dip below 0.5 even
+        for the best configuration, as quantified by the power analysis
+        above.
 
-  \item \textbf{High missing rates.}  Smart inhaler (63.1\%) and daily
-        questionnaire (84.4\%) data are frequently missing, limiting the
-        number of windows with true clinical signal.  Sentinel imputation
-        with missing indicators is employed but may introduce noise.
+  \item \textbf{Train/test prevalence shift.}  22.5\%\,$\to$\,48.2\%
+        between train and test is corrected by Platt scaling on
+        validation but not eliminated; F1, PR-AUC, and Brier remain
+        sensitive to this shift, and we present ROC-AUC as the primary
+        metric for that reason.
 
-  \item \textbf{Small cohort.}  Only 18 patients contribute labeled windows,
-        making it impossible to assess generalisation beyond this cohort.
+  \item \textbf{High missing rates in co-modalities.}  Smart inhaler
+        (63.1\%) and peak-flow (42.6\%) data are frequently missing.
+        Sentinel imputation with paired missing-indicator columns is
+        used, but missingness in AAMOS-00 is correlated with adherence
+        and is itself a soft predictor.
 
   \item \textbf{Environment data excluded.}  Weather, pollen, and air
         quality data available in AAMOS-00 are not yet incorporated.
 
-  \item \textbf{Reduced training budget.}  The local CPU run used
-        subsample\,=\,10 (144 time-steps) and 10 epochs (vs.\ 5 and 20 in
-        the Tier-2 baseline), which suppresses the \texttt{SW\_only}
-        baseline; the relative gains from co-modalities remain valid.
+  \item \textbf{Daily-questionnaire features excluded by design.}  They
+        share a definitional pathway with the label and re-introducing
+        them would re-create the leakage we explicitly guard against.
+        A separate study with an exogenous label (e.g.\ verified
+        oral-steroid prescriptions only) is needed to safely re-include
+        them.
 
-  \item \textbf{No uncertainty quantification.}  All results derive from
-        a single train/val/test split.  Bootstrap confidence intervals or
-        repeated-seed evaluation would be required to establish statistical
-        significance of reported differences; these are left for future work.
+  \item \textbf{Single horizon.}  Only the 24-hour history $\times$
+        7-day forward horizon is evaluated.  Shorter and longer
+        horizons remain future work.
 \end{itemize}
 
 % ============================================================
@@ -858,11 +1003,15 @@ no link to real identities.  No attempt is made to re-identify participants.
 \paragraph{Clinical safety.}
 An early-warning system for asthma exacerbations must balance sensitivity
 (catching true exacerbations) against specificity (avoiding alarm fatigue).
-False negatives carry higher clinical risk—missed exacerbations can escalate
-rapidly.  Our threshold-tuning analysis (Section~\ref{sec:threshold}) provides
-operating points at different precision–recall trade-offs, allowing clinicians
-to configure the system according to the patient's risk profile and tolerance
-for alerts.
+False negatives carry higher clinical risk---missed exacerbations can
+escalate rapidly.  Because ROC-AUC is the prevalence-invariant primary
+metric reported here, any deployment would need to fix an explicit
+decision threshold matched to the deployment-site exacerbation
+prevalence, and re-evaluate precision and recall at that threshold.  The
+patient-cluster bootstrap CIs reported in Section~\ref{sec:multi-seed-detail}
+already make clear that the operating-point estimates would carry
+considerable uncertainty at this cohort size, and clinical deployment
+should therefore wait for a larger-cohort validation.
 
 \paragraph{Bias and fairness.}
 The AAMOS-00 cohort (22~participants enrolled; 18 contribute labeled windows;
@@ -880,64 +1029,73 @@ autonomous decision-making.  Our work is intended for research purposes only.
 \section{Conclusion and Future Work}\label{sec:conclusion}
 % ============================================================
 
-\subsection{Summary of Progress}
+\subsection{Synthesis}
 
-We have built an end-to-end pipeline for asthma exacerbation prediction,
-progressing from data cleaning through labeling, feature engineering,
-tabular baselines, deep-learning sequence models, and multimodal fusion.
-Key findings:
+The technical artefacts of this project---a leakage-audited pipeline, a
+multi-seed protocol, four Tier-2 deep models, a 12-cell Tier-3 sweep,
+seven additional improvement experiments, and patient-cluster bootstrap
+confidence intervals for every reported number---together support a
+single, deliberately unflattering, scientific conclusion: \emph{with 18
+patients, we cannot demonstrate that any wearable-based model
+out-predicts chance for asthma exacerbations}.  The strongest mean AUC
+we observe (0.634, LSTM with smartwatch\,+\,inhaler\,+\,PEF) is below
+the minimum detectable effect at this cohort size, and the seven
+improvement candidates we tested were correspondingly unable to lift it
+for reasons that follow from the same arithmetic.
 
-\begin{itemize}[nosep]
-  \item \textbf{Clinically grounded labeling.}  Combining clinical event flags
-        with multi-domain symptom thresholds yields a 30.3\% positive rate,
-        providing a meaningful and realistic classification challenge.
-  \item \textbf{GRU excels at sequence modeling.}  The two-layer GRU achieves
-        the best Tier-2 discrimination (ROC-AUC\,=\,0.717, PR-AUC\,=\,0.773)
-        by learning directly from raw minute-level sequences.
-  \item \textbf{Sequence-only models are insufficient.}  The smartwatch-only
-        GRU achieves AUC\,=\,0.581 in the multimodal ablation experiment,
-        confirming that clinical co-modalities—not architectural
-        complexity—drive discrimination gains.
-  \item \textbf{Ensembles improve calibration.}  The GRU\,+\,RF weighted
-        ensemble achieves the best Tier-2 Brier score (0.221) and highest F1 (0.659).
-  \item \textbf{Multimodal fusion achieves major gains.}  The full
-        intermediate-fusion GRU ($K{=}90$ tabular features) reaches
-        ROC-AUC\,=\,0.930, F1\,=\,0.871, and Brier\,=\,0.107—a gain of
-        $+$0.349 ROC-AUC over the smartwatch-only baseline in the same
-        ablation experiment.
-  \item \textbf{Reliever use is the strongest leading indicator.}  Adding
-        six smart-inhaler features alone raises ROC-AUC from 0.581 to 0.791
-        ($+$0.210), the largest single-modality gain.
-  \item \textbf{Questionnaire data is highly discriminative despite sparsity.}
-        Daily questionnaire features (84.4\% missing) drive ROC-AUC from
-        0.750 to 0.913 ($+$0.163) when combined with inhaler and peak-flow.
-  \item \textbf{Inter-patient variability is a primary challenge.}  CV AUC
-        ranges from 0.37 to 0.91 across patient folds, motivating
-        personalization strategies.
-\end{itemize}
+What survives this analysis as a defensible contribution is not a
+model, but a methodological template.  Specifically: (i)~clinically
+grounded weekly-questionnaire OR-of-flags labelling that passes a
+shuffled-label probe ($0.495$ AUC) and a forward-only horizon check
+($0$ violations); (ii)~the practice of reporting multi-seed means with
+patient-cluster bootstrap intervals---rather than single-split point
+estimates---in a small-cohort wearable setting, where the per-seed
+standard deviation ($\pm0.05$--$\pm0.10$ AUC) routinely exceeds any
+claimed architectural or preprocessing improvement; and (iii)~a power
+analysis that, if applied prospectively rather than retrospectively,
+would have flagged AAMOS-00 as below threshold for the question we
+set out to answer.  We hope this last point in particular is the
+useful take-away for future small-cohort wearable studies in this
+literature, several of which (Section~\ref{sec:litreview}) report
+single-split AUCs in the same regime as our seed-by-seed upper tail.
+
+Within the experiments we did run, the consistent finding that
+architecture barely moves performance, while adding the
+medication-adherence co-modality moves it by
+${+}0.10$--${+}0.17$ across three recurrent backbones, suggests that
+future work in this area should prioritise modality coverage over
+architectural complexity, and statistical power over hyperparameter
+search.  These are not novel observations, but they are reinforced
+here by an unusually fragile dataset and may have been useful had we
+run the power analysis at the project's start rather than at its end.
 
 \subsection{Planned Next Steps}
 
 \begin{enumerate}[nosep]
-  \item \textbf{Threshold optimisation.}  Apply F1-optimal and
-        clinical-operating-point thresholds for the Full multimodal model to
-        improve F1 beyond the $\tau{=}0.5$ default, addressing the
-        train$\to$test prevalence shift.
-  \item \textbf{Uncertainty quantification.}  Compute bootstrap confidence
-        intervals for key AUC results and evaluate under multiple random seeds
-        to characterise result stability given the small cohort.
-  \item \textbf{Tier~3: Transformer models.}  Evaluate Transformer-based
-        architectures (e.g.\ PatchTST, Informer) for longer temporal context
-        and multi-horizon prediction.
-  \item \textbf{Multiple prediction horizons.}  Evaluate 6-hour and 12-hour
-        windows alongside the current 24-hour setting.
-  \item \textbf{Personalisation.}  Explore user-specific fine-tuning or
-        multi-task learning to reduce inter-patient CV variance.
-  \item \textbf{Environment data integration.}  Incorporate weather, pollen,
-        and air quality features available in AAMOS-00.
-  \item \textbf{Missing-modality robustness.}  Investigate masked-autoencoder
-        or cross-attention strategies to better exploit partially observed
-        co-modalities with high missing rates.
+  \item \textbf{Larger cohort / external validation (highest priority).}
+        The power analysis in Section~\ref{sec:limitations} fixes the
+        minimum useful next cohort at $n\!\gtrsim\!50$ patients;
+        replication on a DIGIPREDICT-scale~\cite{chan2024} cohort is
+        the only intervention that would change the substantive
+        conclusion of this report.
+  \item \textbf{Tier~3 Transformer backbone.}  PatchTST/Informer-style
+        sequence backbones swapped into the same fusion topology, under
+        the same multi-seed protocol, would test whether the
+        ``architecture-doesn't-matter on raw smartwatch'' result
+        extends beyond recurrent/convolutional families.
+  \item \textbf{Multiple prediction horizons.}  Evaluate 1-day, 3-day,
+        and 14-day forward horizons under the same protocol.
+  \item \textbf{Personalisation.}  User-specific fine-tuning or
+        multi-task heads to absorb the inter-patient variance now
+        explicitly visible in per-seed bootstrap CIs.
+  \item \textbf{Environment-data integration.}  Incorporate weather,
+        pollen, and air-quality features available in AAMOS-00 as
+        additional tabular co-modalities.
+  \item \textbf{Exogenous-label re-evaluation.}  Re-introduce
+        daily-questionnaire features safely \emph{only} after switching
+        to a label that does not derive from questionnaire data
+        (e.g.\ verified oral-steroid prescriptions or hospital records
+        only).
 \end{enumerate}
 
 % ============================================================
@@ -1027,6 +1185,10 @@ M.~A.~Ganaie et~al., ``Ensemble deep learning: a review,'' 2021.
 
 \bibitem{synapse}
 Synapse, ``Asthma Mobile Health Study (AMHS),'' dataset record.
+
+\bibitem{jozefowicz2015}
+R.~Jozefowicz, W.~Zaremba, and I.~Sutskever, ``An empirical exploration of
+recurrent network architectures,'' \emph{ICML}, 2015.
 
 \end{thebibliography}
 

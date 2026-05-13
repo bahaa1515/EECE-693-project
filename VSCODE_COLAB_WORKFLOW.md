@@ -64,27 +64,21 @@ It performs:
 1. Clone or pull `https://github.com/bahaa1515/EECE-693-project.git`.
 2. Install `requirements-colab.txt`.
 3. Confirm GPU availability.
-4. Smoke-run notebooks `01` through `06` in the Colab runtime:
+4. Run the full reproduction pipeline (canonical numbers in the report):
 
 ```bash
-python scripts/run_notebook_smoke.py
+python scripts/run_full_pipeline.py --full
 ```
 
-5. Run the Tier-2 reproduction:
-
-```bash
-python -m src.deep_learning --epochs 20 --batch-size 64 --patience 5
-```
-
-6. Display reproduced metrics and comparison against the report table.
+5. Display reproduced metrics and comparison against the report table.
 
 ## Bringing Results Back
 
 After the Colab run, download these generated files or copy their contents back into the local repo:
 
 ```text
-outputs/tables/deep_learning_reproduced_results.csv
-outputs/tables/deep_learning_report_comparison.csv
+outputs/tables/headline_results.csv
+outputs/tables/experiment_comparison.csv
 ```
 
 If the results are important for the report, commit them after review.

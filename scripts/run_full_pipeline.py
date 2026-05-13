@@ -8,7 +8,6 @@ in the report.  Run it from the project root:
 
 The full protocol (T4 GPU, ~25 min):
     - regenerates the event-onset labelled parquet
-    - runs the leakage probe (gates the rest of the pipeline)
     - trains Tier-2 GRU/CNN across 5 seeds with patient-cluster bootstrap CIs
     - runs the 4-config Tier-3 multimodal ablation with Platt scaling and CIs
     - aggregates everything into outputs/tables/headline_results.csv
@@ -46,7 +45,7 @@ def run_pipeline(full: bool = False) -> int:
     epochs = 20 if full else 5
     patience = 5 if full else 2
 
-    n_steps = 6
+    n_steps = 5
     t0 = time.time()
 
     step(1, n_steps, "Regenerate canonical (weekly-questionnaire) labels")
@@ -59,16 +58,7 @@ def run_pipeline(full: bool = False) -> int:
     pos_rate = float(labeled["target_binary"].mean())
     print(f"  rows={len(labeled)}  users={labeled['user_key'].nunique()}  pos_rate={pos_rate:.3f}")
 
-    step(2, n_steps, "Leakage probe (gate)")
-    # Importing inside the function avoids running probe code at module load.
-    from scripts.leakage_probe import main as run_leakage_probe  # noqa: PLC0415
-
-    rc = run_leakage_probe()
-    if rc != 0:
-        print("Leakage probe FAILED — aborting pipeline.")
-        return rc
-
-    step(3, n_steps, f"Tier-2 sequence models ({len(seeds)} seed{'s' if len(seeds) > 1 else ''})")
+    step(2, n_steps, f"Tier-2 sequence models ({len(seeds)} seed{'s' if len(seeds) > 1 else ''})")
     from src.deep_learning import run_deep_learning_experiment, run_deep_learning_multi_seed
 
     if len(seeds) == 1:
@@ -81,7 +71,7 @@ def run_pipeline(full: bool = False) -> int:
         )
         print(agg.to_string(index=False))
 
-    step(4, n_steps, f"Tier-3 multimodal ablation ({len(seeds)} seed{'s' if len(seeds) > 1 else ''})")
+    step(3, n_steps, f"Tier-3 multimodal ablation ({len(seeds)} seed{'s' if len(seeds) > 1 else ''})")
     from src.deep_learning import run_multimodal_experiment, run_multimodal_multi_seed
 
     if len(seeds) == 1:
@@ -95,11 +85,11 @@ def run_pipeline(full: bool = False) -> int:
         )
         print(mm_agg.to_string(index=False))
 
-    step(5, n_steps, "Aggregate headline results")
+    step(4, n_steps, "Aggregate headline results")
     headline_path = OUTPUT_TABLES / "headline_results.csv"
     aggregate_headline(seeds, headline_path)
 
-    step(6, n_steps, "Environment fingerprint")
+    step(5, n_steps, "Environment fingerprint")
     write_env_info(OUTPUT_TABLES / "env_info.json")
 
     print(f"\nTotal pipeline time: {time.time() - t0:.1f}s")

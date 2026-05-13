@@ -1,0 +1,4 @@
+model,roc_auc_mean,roc_auc_std,pr_auc_mean,pr_auc_std,f1_mean,f1_std,brier_mean,brier_std,auc_ci_lo_mean,auc_ci_lo_std,auc_ci_hi_mean,auc_ci_hi_std
+stack_LR_meta,0.5537,0.0767,0.2803,0.2739,0.0616,0.0896,0.227,0.1264,0.355,0.0906,0.74,0.1534
+stack_weighted_val_auc,0.5529,0.0734,0.2822,0.2706,0.0452,0.0961,0.2288,0.1262,0.3592,0.0732,0.7351,0.1533
+stack_avg,0.5526,0.0732,0.2821,0.2702,0.0452,0.096,0.229,0.1265,0.3592,0.0731,0.7347,0.1534

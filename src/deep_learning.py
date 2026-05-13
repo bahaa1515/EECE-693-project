@@ -1361,8 +1361,7 @@ def predict_multimodal_model(
 #   tab_prefixes=list → select columns whose names start with any listed prefix.
 #   tab_prefixes=None → all K=90 columns (full multimodal).
 #
-# Patient-static features are included only in the "Full" config, matching the
-# design in notes.txt (patient_static listed only for the Full block).
+# Patient-static features are included only in the "Full" config.
 # Note (Phase 1 leakage fix): the previous "SW_inhaler_pef_dailyQ" config
 # selected the `daily_*` worsening-score columns; those features have been
 # removed (they were the label).  The remaining four configs form a clean

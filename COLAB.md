@@ -46,11 +46,10 @@ print("CUDA available:", torch.cuda.is_available())
 print("GPU:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU only")
 ```
 
-Run the full notebook smoke pipeline, then the Tier-2 reproduction:
+Run the full reproduction pipeline (canonical numbers in the report):
 
 ```python
-!python scripts/run_notebook_smoke.py
-!python -m src.deep_learning --epochs 20 --batch-size 64 --patience 5
+!python scripts/run_full_pipeline.py --full
 ```
 
 ## Corrected Event-Episode Pipeline

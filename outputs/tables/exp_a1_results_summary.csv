@@ -1,0 +1,3 @@
+variant,roc_auc_mean,roc_auc_std,pr_auc_mean,pr_auc_std,f1_mean,f1_std,brier_mean,brier_std,auc_ci_lo_mean,auc_ci_lo_std,auc_ci_hi_mean,auc_ci_hi_std
+A1_per_patient_norm,0.6231,0.0634,0.3255,0.2449,0.0804,0.1172,0.1963,0.0859,0.3845,0.0722,0.8266,0.0655
+baseline,0.6246,0.0589,0.3347,0.2505,0.1158,0.1614,0.2325,0.119,0.3863,0.0552,0.8042,0.1054
