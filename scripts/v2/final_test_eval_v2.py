@@ -53,38 +53,25 @@ from src.event_v2.modeling_v2 import build_model, select_feature_columns
 from src.event_v2.samples_v2 import build_all_sample_indexes
 from src.event_v2.split_v2 import (
     PatientSplit,
+    add_selection_diagnostics,
     compute_metrics,
+    precision_at_recall_floor,
+    prefix_metrics,
+    recall_at_precision_floor,
+    select_best_by_pr_auc,
     split_feature_table,
+    tune_threshold_max_f1,
 )
 from src.event_labels import USER_COL
 from scripts.v2.sensor_ablation_v2 import _parse_hp
 
 
-def _tune_threshold_max_f1(y_val: np.ndarray, p_val: np.ndarray) -> float:
-    """Pick the probability threshold on val that maximises F1.
-
-    Falls back to 0.5 when val has < 2 classes or no positive probability mass.
-    """
-    y_val = np.asarray(y_val).astype(int)
-    p_val = np.asarray(p_val, dtype=float)
-    if len(np.unique(y_val)) < 2:
-        return 0.5
-    # Candidate cutoffs = unique predicted probabilities (plus 0.5 anchor).
-    cuts = np.unique(np.concatenate([p_val, np.array([0.5])]))
-    if cuts.size == 0:
-        return 0.5
-    best_f1 = -1.0
-    best_t = 0.5
-    from sklearn.metrics import f1_score as _f1
-    for t in cuts:
-        pred = (p_val >= t).astype(int)
-        if pred.sum() == 0:
-            continue
-        f1 = _f1(y_val, pred, zero_division=0)
-        if f1 > best_f1:
-            best_f1 = f1
-            best_t = float(t)
-    return best_t
+def _winner_metric(winner, name: str, default: float = float("nan")) -> float:
+    value = getattr(winner, name, default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _check_leakage_gate(path: Path, tol: float = 0.05) -> None:
@@ -229,7 +216,9 @@ def main() -> int:
         # Fit model #2 on train only to get untainted val predictions for
         # threshold tuning (using model #1's predictions on val would be
         # circular since val was in its training set).
-        tuned_threshold = 0.5
+        tuned_threshold = _winner_metric(winner, "tuned_threshold", default=0.5)
+        val_operating: dict[str, float] = {}
+        train_operating: dict[str, float] = {}
         try:
             X_tr = train[feature_cols]
             y_tr = train["target"].astype(int)
@@ -242,40 +231,85 @@ def main() -> int:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
                     model_tr.fit(X_tr, y_tr)
+                    p_train_for_tune = model_tr.predict_proba(X_tr)[:, 1]
                     p_val_for_tune = model_tr.predict_proba(X_val)[:, 1]
-                tuned_threshold = _tune_threshold_max_f1(y_val.to_numpy(), p_val_for_tune)
+                if not np.isfinite(tuned_threshold):
+                    tuned_threshold, val_operating = tune_threshold_max_f1(
+                        y_val.to_numpy(), p_val_for_tune
+                    )
+                else:
+                    val_operating = compute_metrics(
+                        y_val.to_numpy(),
+                        p_val_for_tune,
+                        threshold=tuned_threshold,
+                    )
+                train_operating = compute_metrics(
+                    y_tr.to_numpy(),
+                    p_train_for_tune,
+                    threshold=tuned_threshold,
+                )
         except Exception as exc:
             print(f"  !! threshold-tune fit failed ({algo} T={T} L={L} W={W}): {exc!r}")
 
         metrics = compute_metrics(y_te.to_numpy(), p_test)
-        # F1 at the val-tuned operating threshold (separate from 0.5 default).
-        from sklearn.metrics import f1_score as _f1
-        from sklearn.metrics import precision_score as _prec
-        from sklearn.metrics import recall_score as _rec
         y_te_arr = y_te.to_numpy()
-        pred_tuned = (p_test >= tuned_threshold).astype(int)
-        f1_tuned = float(_f1(y_te_arr, pred_tuned, zero_division=0))
-        prec_tuned = float(_prec(y_te_arr, pred_tuned, zero_division=0))
-        rec_tuned = float(_rec(y_te_arr, pred_tuned, zero_division=0))
-        tab_rows.append(
-            {
-                "model_family": "tabular",
-                "threshold": T,
-                "input_length_days": L,
-                "washout_days": W,
-                "algo": algo,
-                "hp": str(hp),
-                "n_trainval": len(trainval),
-                "n_test": len(test),
-                "trainval_positive": n_pos,
-                "test_positive": int(y_te.sum()),
-                "tuned_threshold": tuned_threshold,
-                "test_f1_tuned": f1_tuned,
-                "test_precision_tuned": prec_tuned,
-                "test_recall_tuned": rec_tuned,
-                **{f"test_{k}": v for k, v in metrics.items()},
-            }
+        test_tuned = compute_metrics(
+            y_te_arr,
+            p_test,
+            threshold=tuned_threshold,
         )
+        test_recall_pf, test_recall_pf_threshold = recall_at_precision_floor(
+            y_te_arr, p_test
+        )
+        test_precision_rf, test_precision_rf_threshold = precision_at_recall_floor(
+            y_te_arr, p_test
+        )
+        row = {
+            "model_family": "tabular",
+            "threshold": T,
+            "input_length_days": L,
+            "washout_days": W,
+            "algo": algo,
+            "hp": str(hp),
+            "n_train": len(train),
+            "n_val": len(val),
+            "n_trainval": len(trainval),
+            "n_test": len(test),
+            "train_positive": int(train["target"].sum()),
+            "val_positive": int(val["target"].sum()),
+            "trainval_positive": n_pos,
+            "test_positive": int(y_te.sum()),
+            "tuned_threshold": tuned_threshold,
+            "train_pr_auc": _winner_metric(winner, "train_pr_auc"),
+            "train_roc_auc": _winner_metric(winner, "train_roc_auc"),
+            "train_f1": _winner_metric(winner, "train_f1"),
+            "train_precision": _winner_metric(winner, "train_precision"),
+            "train_recall": _winner_metric(winner, "train_recall"),
+            "train_brier": _winner_metric(winner, "train_brier"),
+            "train_accuracy": _winner_metric(winner, "train_accuracy"),
+            "val_pr_auc": _winner_metric(winner, "val_pr_auc"),
+            "val_roc_auc": _winner_metric(winner, "val_roc_auc"),
+            "val_f1": _winner_metric(winner, "val_f1"),
+            "val_precision": _winner_metric(winner, "val_precision"),
+            "val_recall": _winner_metric(winner, "val_recall"),
+            "val_brier": _winner_metric(winner, "val_brier"),
+            "val_accuracy": _winner_metric(winner, "val_accuracy"),
+            "val_recall_at_precision_floor": _winner_metric(
+                winner, "val_recall_at_precision_floor"
+            ),
+            "val_precision_at_recall_floor": _winner_metric(
+                winner, "val_precision_at_recall_floor"
+            ),
+            **prefix_metrics(train_operating, "train_tuned_"),
+            **prefix_metrics(val_operating, "val_tuned_refit_"),
+            **prefix_metrics(metrics, "test_"),
+            **prefix_metrics(test_tuned, "test_tuned_"),
+            "test_recall_at_precision_floor": test_recall_pf,
+            "test_recall_at_precision_floor_threshold": test_recall_pf_threshold,
+            "test_precision_at_recall_floor": test_precision_rf,
+            "test_precision_at_recall_floor_threshold": test_precision_rf_threshold,
+        }
+        tab_rows.append(add_selection_diagnostics(row))
         # Per-sample test predictions for offline bootstrap CIs.
         test_meta = test.reset_index(drop=True)
         for i in range(len(test_meta)):
@@ -390,8 +424,12 @@ def main() -> int:
                     "best_epoch": out["best_epoch"],
                 }
                 for k, v in out.items():
-                    if k.startswith("test_"):
-                        row[k] = v
+                    if k in {"p_val", "p_test"}:
+                        continue
+                    if isinstance(v, np.ndarray):
+                        continue
+                    row[k] = v
+                row = add_selection_diagnostics(row)
                 dl_rows.append(row)
                 # per-sample test predictions for this seed
                 p_test_seed = np.asarray(out.get("p_test", []), dtype=float)
@@ -421,11 +459,12 @@ def main() -> int:
     # ---- 3. Headline summary --------------------------------------- #
     headline_rows: list[dict] = []
     if not tab_df.empty:
-        # Pick the best per algo by test_pr_auc.
-        top = (
-            tab_df.sort_values("test_pr_auc", ascending=False)
-            .groupby("algo", as_index=False)
-            .head(1)
+        # Pick the headline row per algo by validation PR-AUC only.  Test
+        # metrics are reported after selection and never used for choosing.
+        top = select_best_by_pr_auc(
+            tab_df,
+            score_col="val_pr_auc",
+            group_cols=("algo",),
         )
         for r in top.itertuples(index=False):
             headline_rows.append(
@@ -435,14 +474,33 @@ def main() -> int:
                     "threshold": r.threshold,
                     "input_length_days": r.input_length_days,
                     "washout_days": r.washout_days,
+                    "selection_metric": "val_pr_auc",
+                    "train_pr_auc": getattr(r, "train_pr_auc", float("nan")),
+                    "val_pr_auc": getattr(r, "val_pr_auc", float("nan")),
+                    "train_val_pr_auc_gap": getattr(
+                        r, "train_val_pr_auc_gap", float("nan")
+                    ),
+                    "val_recall_at_precision_floor": getattr(
+                        r, "val_recall_at_precision_floor", float("nan")
+                    ),
+                    "val_precision_at_recall_floor": getattr(
+                        r, "val_precision_at_recall_floor", float("nan")
+                    ),
                     "test_pr_auc": r.test_pr_auc,
+                    "val_test_pr_auc_gap": getattr(
+                        r, "val_test_pr_auc_gap", float("nan")
+                    ),
                     "test_roc_auc": r.test_roc_auc,
                     "test_f1": r.test_f1,
-                    "test_f1_tuned": getattr(r, "test_f1_tuned", float("nan")),
+                    "test_tuned_f1": getattr(r, "test_tuned_f1", float("nan")),
                     "tuned_threshold": getattr(r, "tuned_threshold", float("nan")),
                     "test_precision": r.test_precision,
                     "test_recall": r.test_recall,
                     "test_brier": r.test_brier,
+                    "overfit_gap_flag": getattr(r, "overfit_gap_flag", False),
+                    "low_val_event_detection_flag": getattr(
+                        r, "low_val_event_detection_flag", False
+                    ),
                     "n_test": r.n_test,
                 }
             )
@@ -450,14 +508,23 @@ def main() -> int:
         agg = (
             dl_df.groupby(["arch", "threshold", "input_length_days", "washout_days"])
             .agg(
+                train_pr_auc_mean=("train_pr_auc", "mean"),
+                val_pr_auc_mean=("val_pr_auc", "mean"),
+                train_val_pr_auc_gap_mean=("train_val_pr_auc_gap", "mean"),
                 test_pr_auc_mean=("test_pr_auc", "mean"),
                 test_pr_auc_std=("test_pr_auc", "std"),
+                val_test_pr_auc_gap_mean=("val_test_pr_auc_gap", "mean"),
                 test_roc_auc_mean=("test_roc_auc", "mean"),
                 test_f1_mean=("test_f1", "mean"),
+                test_tuned_f1_mean=("test_tuned_f1", "mean"),
+                overfit_gap_rate=("overfit_gap_flag", "mean"),
                 n_seeds=("seed", "count"),
             )
             .reset_index()
-            .sort_values("test_pr_auc_mean", ascending=False)
+            .sort_values(
+                ["val_pr_auc_mean", "train_val_pr_auc_gap_mean"],
+                ascending=[False, True],
+            )
         )
         for r in agg.itertuples(index=False):
             headline_rows.append(
@@ -467,10 +534,17 @@ def main() -> int:
                     "threshold": r.threshold,
                     "input_length_days": r.input_length_days,
                     "washout_days": r.washout_days,
+                    "selection_metric": "val_pr_auc_mean",
+                    "train_pr_auc": r.train_pr_auc_mean,
+                    "val_pr_auc": r.val_pr_auc_mean,
+                    "train_val_pr_auc_gap": r.train_val_pr_auc_gap_mean,
                     "test_pr_auc": r.test_pr_auc_mean,
                     "test_pr_auc_std": r.test_pr_auc_std,
+                    "val_test_pr_auc_gap": r.val_test_pr_auc_gap_mean,
                     "test_roc_auc": r.test_roc_auc_mean,
                     "test_f1": r.test_f1_mean,
+                    "test_tuned_f1": r.test_tuned_f1_mean,
+                    "overfit_gap_rate": r.overfit_gap_rate,
                     "n_seeds": int(r.n_seeds),
                 }
             )

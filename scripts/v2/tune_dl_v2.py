@@ -203,8 +203,11 @@ def main() -> int:
                     "best_val_loss": out["best_val_loss"],
                 }
                 for k, v in out.items():
-                    if k.startswith("val_") or k.startswith("test_"):
-                        row[k] = v
+                    if k in {"p_val", "p_test"}:
+                        continue
+                    if isinstance(v, np.ndarray):
+                        continue
+                    row[k] = v
                 trial_rows.append(row)
 
     if not trial_rows:
@@ -273,14 +276,22 @@ def main() -> int:
             "best_val_loss": out["best_val_loss"],
         }
         for k, v in out.items():
-            if k.startswith("val_") or k.startswith("test_"):
-                row[k] = v
+            if k in {"p_val", "p_test"}:
+                continue
+            if isinstance(v, np.ndarray):
+                continue
+            row[k] = v
         ms_rows.append(row)
     ms_df = pd.DataFrame(ms_rows)
     ms_path = OUTPUT_TABLES_V2 / "tune_dl_v2_multiseed.csv"
     ms_df.to_csv(ms_path, index=False)
 
-    summary_cols = [c for c in ms_df.columns if c.startswith(("val_", "test_"))]
+    summary_cols = [
+        c
+        for c in ms_df.columns
+        if c.startswith(("train_", "val_", "test_"))
+        or c in {"train_val_pr_auc_gap", "val_test_pr_auc_gap"}
+    ]
     summary = (
         ms_df.groupby(["threshold", "input_length_days", "washout_days", "arch"])[summary_cols]
         .agg(["mean", "std", "min", "max"])
