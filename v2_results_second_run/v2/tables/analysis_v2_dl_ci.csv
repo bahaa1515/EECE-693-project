@@ -1,0 +1,2 @@
+arch,threshold,input_length_days,washout_days,n_seeds,pr_auc_mean,pr_auc_std,roc_auc_mean,roc_auc_std
+rnn,3,14,14,5,0.2614819146420075,0.14841271355034977,0.9021874999999999,0.05708847728115763
