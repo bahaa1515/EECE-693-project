@@ -32,7 +32,15 @@ from src.deep_learning import (
 )
 from . import OUTPUT_TABLES_V2
 from .features_v2 import ALL_SENSOR_SOURCES, SOURCE_ZERO_IF_EMPTY
-from .split_v2 import PatientSplit, compute_metrics
+from .split_v2 import (
+    PatientSplit,
+    add_selection_diagnostics,
+    compute_metrics,
+    precision_at_recall_floor,
+    prefix_metrics,
+    recall_at_precision_floor,
+    tune_threshold_max_f1,
+)
 
 
 ARCH_FACTORIES = {
@@ -190,6 +198,18 @@ def _make_loaders(X_dict, y_dict, batch_size: int):
     )
 
 
+def _make_eval_loader(X: np.ndarray, y: np.ndarray, batch_size: int):
+    torch, _, DataLoader, TensorDataset = _require_torch()
+    return DataLoader(
+        TensorDataset(
+            torch.from_numpy(X),
+            torch.from_numpy(y.astype(np.float32)),
+        ),
+        batch_size=batch_size,
+        shuffle=False,
+    )
+
+
 def _build_arch(arch: str, input_dim: int, hp: dict):
     factory = ARCH_FACTORIES[arch]
     common = dict(input_dim=input_dim, subsample=1)
@@ -231,6 +251,10 @@ def train_one_arch(
         patience=patience,
         learning_rate=learning_rate,
     )
+    p_train = predict_torch_model(
+        model,
+        _make_eval_loader(X_dict["train"], y_dict["train"], batch_size),
+    )
     p_val = predict_torch_model(model, val_loader)
     p_test = predict_torch_model(model, test_loader)
     if apply_platt and len(np.unique(y_dict["val"])) == 2:
@@ -238,18 +262,46 @@ def train_one_arch(
     else:
         p_test_cal = p_test
 
+    tuned_threshold, val_tuned = tune_threshold_max_f1(y_dict["val"], p_val)
+    train_metrics = compute_metrics(y_dict["train"], p_train)
+    train_tuned = compute_metrics(
+        y_dict["train"],
+        p_train,
+        threshold=tuned_threshold,
+    )
     val_metrics = compute_metrics(y_dict["val"], p_val)
     test_metrics = compute_metrics(y_dict["test"], p_test_cal)
-    return {
+    test_tuned = compute_metrics(
+        y_dict["test"],
+        p_test_cal,
+        threshold=tuned_threshold,
+    )
+    val_recall_pf, val_recall_pf_threshold = recall_at_precision_floor(
+        y_dict["val"], p_val
+    )
+    val_precision_rf, val_precision_rf_threshold = precision_at_recall_floor(
+        y_dict["val"], p_val
+    )
+    row = {
         "arch": arch,
         "seed": seed,
         "best_epoch": meta["best_epoch"],
         "best_val_loss": meta["best_val_loss"],
-        **{f"val_{k}": v for k, v in val_metrics.items()},
-        **{f"test_{k}": v for k, v in test_metrics.items()},
+        "tuned_threshold": tuned_threshold,
+        **prefix_metrics(train_metrics, "train_"),
+        **prefix_metrics(val_metrics, "val_"),
+        **prefix_metrics(test_metrics, "test_"),
+        **prefix_metrics(train_tuned, "train_tuned_"),
+        **prefix_metrics(val_tuned, "val_tuned_"),
+        **prefix_metrics(test_tuned, "test_tuned_"),
+        "val_recall_at_precision_floor": val_recall_pf,
+        "val_recall_at_precision_floor_threshold": val_recall_pf_threshold,
+        "val_precision_at_recall_floor": val_precision_rf,
+        "val_precision_at_recall_floor_threshold": val_precision_rf_threshold,
         "p_val": p_val,
         "p_test": p_test_cal,
     }
+    return add_selection_diagnostics(row)
 
 
 __all__ = [

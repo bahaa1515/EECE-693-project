@@ -3,6 +3,8 @@
 The Tier-2 GRU/CNN run can be heavy on a local CPU because it builds 24-hour minute-level sequences and trains neural networks. Colab is useful because it can provide a free GPU runtime and usually already includes PyTorch.
 
 If you are using the VS Code Colab extension, also see `VSCODE_COLAB_WORKFLOW.md`.
+For the corrected v2 event-episode metric-selection protocol, use
+`V2_METRIC_PROTOCOL_RUNBOOK.md` and `scripts/v2/run_metric_protocol.py`.
 
 ## Recommended Colab Runtime
 

@@ -50,10 +50,15 @@ from src.event_v2.modeling_v2 import build_model, select_feature_columns
 from src.event_v2.samples_v2 import build_all_sample_indexes, write_sample_indexes
 from src.event_v2.split_v2 import (
     METRIC_COLUMNS,
+    add_selection_diagnostics,
     compute_metrics,
     make_patient_three_way_split,
+    precision_at_recall_floor,
+    prefix_metrics,
+    recall_at_precision_floor,
     select_best_by_pr_auc,
     split_feature_table,
+    tune_threshold_max_f1,
 )
 
 
@@ -122,12 +127,39 @@ def _run_trial(
         warnings.simplefilter("ignore")
         model.fit(X_train, y_train)
         if hasattr(model, "predict_proba"):
+            train_score = model.predict_proba(X_train)[:, 1]
             y_score = model.predict_proba(X_val)[:, 1]
         else:
+            train_score = model.decision_function(X_train)
             y_score = model.decision_function(X_val)
 
-    metrics = compute_metrics(y_val.to_numpy(), y_score)
-    return {f"val_{k}": v for k, v in metrics.items()}
+    train_metrics = compute_metrics(y_train.to_numpy(), train_score)
+    val_metrics = compute_metrics(y_val.to_numpy(), y_score)
+    tuned_threshold, val_tuned = tune_threshold_max_f1(y_val.to_numpy(), y_score)
+    train_tuned = compute_metrics(
+        y_train.to_numpy(),
+        train_score,
+        threshold=tuned_threshold,
+    )
+    val_recall_pf, val_recall_pf_threshold = recall_at_precision_floor(
+        y_val.to_numpy(), y_score
+    )
+    val_precision_rf, val_precision_rf_threshold = precision_at_recall_floor(
+        y_val.to_numpy(), y_score
+    )
+
+    row: dict[str, Any] = {
+        **prefix_metrics(train_metrics, "train_"),
+        **prefix_metrics(val_metrics, "val_"),
+        "tuned_threshold": tuned_threshold,
+        **prefix_metrics(train_tuned, "train_tuned_"),
+        **prefix_metrics(val_tuned, "val_tuned_"),
+        "val_recall_at_precision_floor": val_recall_pf,
+        "val_recall_at_precision_floor_threshold": val_recall_pf_threshold,
+        "val_precision_at_recall_floor": val_precision_rf,
+        "val_precision_at_recall_floor_threshold": val_precision_rf_threshold,
+    }
+    return add_selection_diagnostics(row)
 
 
 def _stringify_params(params: dict[str, Any]) -> str:
@@ -310,6 +342,7 @@ def main() -> int:
                     **{f"param_{k}": v for k, v in params.items()},
                     **metrics,
                 }
+                row = add_selection_diagnostics(row)
                 trial_rows.append(row)
 
     if not trial_rows:
