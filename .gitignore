@@ -48,6 +48,14 @@ progress_report/
 notes.txt
 colab_results/
 data/interim/
+data/processed/v2/
+deliverables/
+notebooks/EECE-693-project/
+outputs/v2/tables/_phase4_lr_rf_backup/
+outputs/v2/tables/analysis_v2_*.csv
+outputs/v2/tables/final_test_v2_*.csv
+outputs/v2/tables/leakage_probe_v2*.csv
+outputs/v2/tables/sensor_ablation_v2.csv
 
 # LaTeX build artifacts
 report/*.aux

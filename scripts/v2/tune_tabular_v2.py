@@ -47,7 +47,11 @@ from src.event_v2.features_v2 import (
     feature_table_filename_v2,
 )
 from src.event_v2.modeling_v2 import build_model, select_feature_columns
-from src.event_v2.samples_v2 import build_all_sample_indexes, write_sample_indexes
+from src.event_v2.samples_v2 import (
+    build_all_sample_indexes,
+    sample_index_filename,
+    write_sample_indexes,
+)
 from src.event_v2.split_v2 import (
     METRIC_COLUMNS,
     add_selection_diagnostics,
@@ -168,6 +172,43 @@ def _stringify_params(params: dict[str, Any]) -> str:
     return ";".join(f"{k}={v}" for k, v in items)
 
 
+def _requested_keys(
+    thresholds: Iterable[int],
+    lengths: Iterable[int],
+    washouts: Iterable[int],
+) -> list[tuple[int, int, int]]:
+    return [
+        (int(threshold), int(length), int(washout))
+        for threshold, length, washout in itertools.product(
+            thresholds,
+            lengths,
+            washouts,
+        )
+    ]
+
+
+def _load_existing_sample_indexes(
+    keys: Iterable[tuple[int, int, int]],
+) -> dict[tuple[int, int, int], pd.DataFrame]:
+    """Load Phase-3 sample indexes without rewriting intermediate outputs."""
+    sample_indexes: dict[tuple[int, int, int], pd.DataFrame] = {}
+    missing: list[Path] = []
+    for threshold, length, washout in keys:
+        path = DATA_PROCESSED_V2 / sample_index_filename(threshold, length, washout)
+        if not path.exists():
+            missing.append(path)
+            continue
+        sample_indexes[(threshold, length, washout)] = pd.read_parquet(path)
+    if missing:
+        shown = "\n".join(f"  - {path}" for path in missing[:12])
+        extra = "" if len(missing) <= 12 else f"\n  ... and {len(missing) - 12} more"
+        raise SystemExit(
+            "Missing Phase-3 sample-index parquet(s), and --reuse-features was "
+            f"requested so they will not be rebuilt:\n{shown}{extra}"
+        )
+    return sample_indexes
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -210,25 +251,34 @@ def main() -> int:
     # ------------------------------------------------------------------ #
     # 1. Labels (deterministic; safe to re-run).
     # ------------------------------------------------------------------ #
-    print("\n[1/4] Building event labels...")
-    label_artifacts = run_event_labeling(thresholds=thresholds)
+    if args.reuse_features:
+        print("\n[1/4] Skipping event-label rebuild (--reuse-features).")
+    else:
+        print("\n[1/4] Building event labels...")
+        label_artifacts = run_event_labeling(thresholds=thresholds)
 
     # ------------------------------------------------------------------ #
     # 2. Sample indexes (v2 contract-verified).
     # ------------------------------------------------------------------ #
-    print("\n[2/4] Building v2 sample indexes...")
-    sample_indexes, sample_counts = build_all_sample_indexes(
-        weekly_events=label_artifacts.weekly_events,
-        probable_days_by_threshold=label_artifacts.probable_event_days,
-        episodes_by_threshold=label_artifacts.event_episodes,
-        input_lengths=lengths,
-        washout_values=washouts,
-    )
-    # Keep only requested thresholds:
-    sample_indexes = {
-        k: v for k, v in sample_indexes.items() if k[0] in thresholds
-    }
-    write_sample_indexes(sample_indexes, sample_counts)
+    if args.reuse_features:
+        print("\n[2/4] Loading existing v2 sample indexes (--reuse-features)...")
+        sample_indexes = _load_existing_sample_indexes(
+            _requested_keys(thresholds, lengths, washouts)
+        )
+    else:
+        print("\n[2/4] Building v2 sample indexes...")
+        sample_indexes, sample_counts = build_all_sample_indexes(
+            weekly_events=label_artifacts.weekly_events,
+            probable_days_by_threshold=label_artifacts.probable_event_days,
+            episodes_by_threshold=label_artifacts.event_episodes,
+            input_lengths=lengths,
+            washout_values=washouts,
+        )
+        # Keep only requested thresholds:
+        sample_indexes = {
+            k: v for k, v in sample_indexes.items() if k[0] in thresholds
+        }
+        write_sample_indexes(sample_indexes, sample_counts)
 
     # ------------------------------------------------------------------ #
     # 3. Feature tables.
@@ -245,13 +295,24 @@ def main() -> int:
                 feature_paths[key] = path
         missing = [k for k in sample_indexes if k not in feature_paths]
         if missing:
-            print(f"  rebuilding {len(missing)} missing feature tables...")
-            partial_idx = {k: sample_indexes[k] for k in missing}
-            _, new_paths = build_and_write_feature_tables_v2(
-                sample_indexes=partial_idx,
-                sensor_sources=None if args.sensor_tag == "all" else args.sensor_tag.split("+"),
+            shown = "\n".join(
+                "  - "
+                + str(
+                    DATA_PROCESSED_V2
+                    / feature_table_filename_v2(
+                        T,
+                        L,
+                        W,
+                        sensor_tag=args.sensor_tag,
+                    )
+                )
+                for T, L, W in missing[:12]
             )
-            feature_paths.update(new_paths)
+            extra = "" if len(missing) <= 12 else f"\n  ... and {len(missing) - 12} more"
+            raise SystemExit(
+                "Missing Phase-3 feature parquet(s), and --reuse-features was "
+                f"requested so they will not be rebuilt:\n{shown}{extra}"
+            )
     else:
         _, feature_paths = build_and_write_feature_tables_v2(
             sample_indexes=sample_indexes,
