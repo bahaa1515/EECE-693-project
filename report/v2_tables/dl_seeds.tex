@@ -1,0 +1,19 @@
+\begin{table}[t]
+\centering
+\small
+\caption{Deep-learning winner (RNN, $(T,L,W)=(3,14,14)$, all sensors) refit across five seeds.  Default-cutoff accuracy / precision / recall / F1 plus ranking metrics on the held-out test partition.}\label{tab:v2_dl_seeds}
+\begin{tabular}{ccccccccc}
+\toprule
+Seed & Best Epoch & Acc & Prec & Rec & F1 & ROC-AUC & PR-AUC & Brier \\
+\midrule
+42 & 27 & 0.988 & 0.000 & 0.000 & 0.000 & 0.962 & 0.357 & 0.012 \\
+43 & 28 & 0.988 & 0.000 & 0.000 & 0.000 & 0.958 & 0.405 & 0.012 \\
+44 & 30 & 0.988 & 0.000 & 0.000 & 0.000 & 0.828 & 0.075 & 0.012 \\
+45 & 30 & 0.988 & 0.000 & 0.000 & 0.000 & 0.887 & 0.341 & 0.012 \\
+46 & 29 & 0.988 & 0.000 & 0.000 & 0.000 & 0.876 & 0.129 & 0.012 \\
+\midrule
+\textbf{Mean} & --- & 0.988 & 0.000 & 0.000 & 0.000 & 0.902 & 0.261 & 0.012 \\
+\textbf{Std} & --- & 0.000 & 0.000 & 0.000 & 0.000 & 0.057 & 0.148 & 0.000 \\
+\bottomrule
+\end{tabular}
+\end{table}

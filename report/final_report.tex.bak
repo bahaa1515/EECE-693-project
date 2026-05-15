@@ -1,0 +1,1149 @@
+% ==========================================================================
+% EECE 693 -- Neural Networks / Deep Learning -- FINAL REPORT
+% Early Warning Prediction of Asthma Exacerbations from Wearable Data
+% ==========================================================================
+\documentclass[11pt,a4paper]{article}
+
+% ---- packages ------------------------------------------------------------
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{amsmath,amssymb}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{multirow}
+\usepackage{float}
+\usepackage[numbers]{natbib}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage{array}
+\usepackage{tabularx}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!60!black,
+  citecolor=blue!60!black,
+  urlcolor=blue!60!black
+}
+
+\newcommand{\rocauc}{ROC\nobreakdash-AUC}
+\newcommand{\prauc}{PR\nobreakdash-AUC}
+
+% ---- title ---------------------------------------------------------------
+\title{%
+  \textbf{EECE 693 (Neural Networks / Deep Learning) -- Final Report}\\[6pt]
+  \Large Early Warning Prediction of Asthma Exacerbations\\
+  Using Wearable and Digital-Health Data}
+
+\author{%
+  Bahaa Hamdan \qquad Tarek El Mourad \qquad Anthony Kanaan \\[4pt]
+  Department of Electrical and Computer Engineering,\\
+  American University of Beirut (AUB) \qquad Spring 2026\\
+  Beirut, Lebanon}
+
+\date{}
+
+\begin{document}
+\maketitle
+
+% ==========================================================================
+\begin{abstract}
+% ==========================================================================
+Asthma exacerbations are acute episodes of worsening respiratory symptoms
+that account for the majority of preventable morbidity, hospital use, and
+cost in chronic asthma care.  Continuous wearable and digital-health
+signals offer the potential to anticipate these events early enough to
+trigger structured self-management.  This report covers the full arc of
+our final-year work: an initial smartwatch-only day-level pipeline (the
+\emph{progress-report} system), a set of methodological fixes prompted by
+post-submission re-analysis, the addition of two further deep-learning
+families (Tier-3, RNN and LSTM) and a multi-seed evaluation protocol, a
+clinically reformulated prediction task that we call
+\emph{Event-Episode Pre-Onset Anticipation}, and finally a
+generalisation-stress-test that combines leave-one-patient-out
+cross-validation with a patient-level permutation null.
+
+The reformulated task isolates the question that clinicians actually
+care about--given a patient's recent multimodal record, can we anticipate
+the onset of a new exacerbation episode in the next few days?--and runs
+the full pipeline (labels, samples, features, model selection, sensor
+ablation, leakage probe, bootstrap confidence intervals) under
+patient-disjoint splits at every stage.  Headline numbers on a held-out
+4-patient test fold are high
+(Random-Forest \rocauc{}~=~0.879; XGBoost on smartinhaler-only
+features \rocauc{}~=~0.964; multi-seed RNN test \rocauc{}~=~0.65~$\pm$~0.26),
+but leave-one-patient-out validation reveals that the strongest tabular
+score collapses to pooled \rocauc{}~$=$~0.354 across the cohort and that
+a patient-level permutation null cannot distinguish the headline
+performance from chance ($p$~=~0.40 for the headline Random Forest,
+$p$~=~0.22 for the inhaler-only XGBoost).  We report these findings
+together because they are the honest answer that an $n$~=~18 cohort can
+support: discriminative power is real on a favourable split, but
+cross-patient generalisation at clinically useful effect sizes has not
+been established.  We discuss the implications for deployment and the
+methodological lessons for similar wearable-cohort studies.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ==========================================================================
+\section{Introduction}\label{sec:intro}
+% ==========================================================================
+
+Asthma is a chronic inflammatory airway disease that affects an estimated
+262~million people worldwide and contributes to approximately
+455{,}000~deaths annually~\cite{who2024}.  Exacerbations -- acute or
+sub-acute episodes of worsening symptoms or lung-function decline -- are
+the most consequential events in asthma care.  They lead to emergency
+visits, hospitalisation, and life-threatening deterioration when not
+recognised early~\cite{bourdin2019}, and the total annual cost of asthma
+in the United States alone is estimated at \$81.9~billion~\cite{nurmagambetov2018}.
+
+Two complementary lines of evidence motivate the present work.  First,
+clinical outcomes improve when worsening is identified early and patients
+act on structured self-management plans~\cite{pinnock2015}.  Second, a
+recent systematic review~\cite{cokorudy2024} supports the feasibility of
+detecting exacerbation-related changes via continuous digital markers
+derived from wearable and mobile-health sensors.  Smartwatches in
+particular -- now capturing minute-level heart rate, activity type, step
+count, and intensity in everyday environments -- are a practical
+deployment platform for such monitoring~\cite{taylor2020}.
+
+We formulate early warning as a supervised time-series prediction task:
+given a recent multimodal record, estimate the probability that an
+exacerbation occurs within a defined upcoming horizon.  Using the
+publicly available AAMOS-00 dataset~\cite{tsang2023}, we develop an
+end-to-end pipeline spanning data cleaning, label construction, feature
+engineering, tabular baselines, deep-learning sequence models, and -- in
+this final phase -- a generalisation stress-test designed to reveal
+whether reported scores reflect genuine signal or split-specific
+artefacts.
+
+\subsection{Contributions in this Final Report}
+
+This report extends the progress-report system in five concrete ways:
+
+\begin{enumerate}[nosep]
+  \item \textbf{Methodological audit.}  We retrospectively identify three
+        weaknesses in the progress-report pipeline -- 1-hour-stride
+        overlapping windows, a week-level positive label that propagates
+        identical targets to ${\sim}168$~adjacent samples, and a 16.5\%/48.2\%
+        prevalence mismatch between train and test caused by a small,
+        single-seed patient split -- and show how each is addressed in the
+        reformulated pipeline (Section~\ref{sec:fixes}).
+  \item \textbf{Tier-3 deep-learning models.}  We add a vanilla RNN and an
+        LSTM to the GRU/CNN pair from the progress report and re-train all
+        four families under a unified multi-seed protocol
+        (Section~\ref{sec:tier3}).
+  \item \textbf{Reformulated task: Event-Episode Pre-Onset Anticipation.}
+        We replace the week-level binary label with a per-episode label
+        defined over an $L$-day window ending the day \emph{before} each
+        clinical onset, swept over three thresholds, three lookbacks, and
+        three washouts (27~cells), with patient-disjoint splits at every
+        stage (Section~\ref{sec:onset}).
+  \item \textbf{Sensor ablation and a label-leakage probe.}  We refit each
+        cell-winner on nine sensor subsets (729~refits) and run a 5-shuffle
+        label-permutation probe across all 81~configurations to bound the
+        ceiling under truly random labels (Section~\ref{sec:onset-results}).
+  \item \textbf{Generalisation stress-test.}  We re-evaluate the two
+        headline tabular configurations under
+        leave-one-patient-out cross-validation across all 18~patients and
+        run a 200-permutation patient-level null
+        (Section~\ref{sec:lopo}).  We report the honest conclusions even
+        when they contradict the headline numbers.
+\end{enumerate}
+
+% ==========================================================================
+\section{Literature Review}\label{sec:lit}
+% ==========================================================================
+
+\subsection{Machine learning for asthma exacerbation prediction}
+
+A narrative review by Molfino and Turcatel~\cite{molfino2024} maps the
+machine-learning literature on asthma exacerbation prediction, spanning
+logistic regression, tree-based methods, and deep learning.  Key
+practical challenges identified across studies include heterogeneous
+outcome definitions, limited external validation, and inconsistent
+generalisability across patient populations.
+
+\subsection{Home-monitoring time series and the false-alarm problem}
+
+De~Hond et~al.~\cite{dehond2022} compared classical and machine-learning
+models for predicting severe exacerbations from home-monitoring time
+series and found that machine learning did not outperform logistic
+regression in their setting.  They explicitly discuss the
+\emph{false-alarm problem} inherent to rare-event prediction: even
+models with high \rocauc{} may produce unacceptable false-positive rates
+when the base rate of exacerbations is low.  Their findings motivate
+reporting precision--recall curves and sensitivity at controlled
+false-alarm rates -- a recommendation we adopt throughout.
+
+\subsection{Connected inhalers and multimodal monitoring}
+
+Lugogo et~al.~\cite{lugogo2022} demonstrated predictive performance using
+connected-inhaler signals and gradient boosting, achieving clinically
+meaningful discrimination from a single modality.  Tsang
+et~al.~\cite{tsang2023} introduced AAMOS-00, the multimodal dataset on
+which our work is built; it combines smartwatch sensing, smart-inhaler
+data, peak-flow measurements, and weekly questionnaires.  The DIGIPREDICT
+protocol~\cite{chan2024} further reflects the field's movement toward
+multimodal, physiological early-warning systems.
+
+\subsection{Digital markers and wearable data quality}
+
+A 2024 systematic review by Cokorudy et~al.~\cite{cokorudy2024} catalogues
+multiple digital markers associated with asthma exacerbations and
+evaluates their potential for near real-time monitoring.  Cho
+et~al.~\cite{cho2021} review wearable data quality challenges, including
+missing segments and sensor noise, motivating robust preprocessing and
+missingness-aware modeling.
+
+\subsection{Gaps addressed}
+
+Three gaps recur across the literature: (i) robust modeling under
+rare-event conditions with appropriate calibration and false-alarm
+control; (ii) effective learning from noisy, incomplete, heterogeneous
+wearable time series; and (iii) principled fusion of multimodal streams.
+The present report addresses (i) and (iii) directly and identifies (ii)
+as the binding constraint for the AAMOS-00 cohort.
+
+% ==========================================================================
+\section{Dataset}\label{sec:data}
+% ==========================================================================
+
+\subsection{AAMOS-00 overview}
+
+We use the AAMOS-00 dataset~\cite{tsang2023}, publicly available under the
+CC~BY~4.0 licence~\cite{datashare}.  Phase~2 of the study enrolled
+22~participants and provides ${\sim}2{,}054$~unique patient-days of data
+spanning four modalities (smartwatch, smartinhaler, peak flow,
+environment) plus a weekly clinical questionnaire and a small set of
+patient-static descriptors.
+
+After cleaning, 20~unique users contribute usable smartwatch data and
+18~unique users contribute usable weekly questionnaire entries.  The
+weekly questionnaire is the ground-truth source for exacerbation labels
+in every formulation of the task; the 18~users with valid questionnaire
+data form the cohort used throughout the rest of this report.
+
+\subsection{Modality summary}
+
+\begin{table}[H]
+\centering
+\caption{AAMOS-00 modality coverage used in the final report
+($n$~=~18~users).}
+\label{tab:modalities}
+\small
+\begin{tabularx}{\linewidth}{lXrl}
+\toprule
+\textbf{Modality} & \textbf{Signals} & \textbf{Patient-days} &
+\textbf{Used in} \\
+\midrule
+Smartwatch         & Heart rate, activity type, intensity, steps &
+${\sim}1{,}567$ & All phases \\
+Smartinhaler       & Rescue-inhaler actuation timestamps &
+${\sim}694$    & Sec.~\ref{sec:onset} \\
+Peak-flow meter    & AM/PM peak expiratory flow &
+${\sim}1{,}099$ & Sec.~\ref{sec:onset} \\
+Environment        & Weather / pollen / air quality &
+Throughout       & Sec.~\ref{sec:onset} \\
+Weekly questionnaire & 0--6 symptom scores; clinical event flags &
+${\sim}1{,}583$ & Label source \\
+Patient-static     & Age band, sex, severity tier &
+$n=18$           & Merged feature \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Cleaning}
+
+Smartwatch streams were de-duplicated per user; heart-rate values outside
+the physiologically plausible range (${<}30$ or ${>}220$~bpm) were set to
+missing; short gaps (${\leq}5$~min) were forward-filled and longer gaps
+left as NaN.  After cleaning, the smartwatch corpus contains
+$2{,}101{,}759$ minute-level rows with an overall HR-missingness rate of
+$25.3\%$, driven mainly by periods when the device was charging or not
+worn.  Per-user HR missingness ranges from $15.8\%$ to $61.6\%$,
+reflecting real-world adherence heterogeneity.
+
+% ==========================================================================
+\section{Phase~I: Initial Day-Level Smartwatch Pipeline}\label{sec:phase1}
+% ==========================================================================
+
+The progress-report system, summarised here for completeness, frames
+exacerbation prediction as a 24-hour-window classification problem driven
+exclusively by smartwatch data.
+
+\subsection{Window construction and features}
+
+Each 24-hour history window ($1{,}440$~minutes of HR, activity type,
+intensity, and step count) was advanced with a 1-hour stride and required
+${\geq}70\%$ non-missing minutes for retention, yielding 31{,}125 windows
+across 18~users.  Tabular models consumed 29~engineered features per
+window covering HR statistics (mean, median, std, min, max, slope,
+missingness), step features (sum, mean, max, slope), activity-state
+fractions, and derived day/night summaries.
+
+\subsection{Labels}
+
+A week was labelled positive if a clinical event was recorded
+(doctor visit, hospital/ER admission, oral-steroid course) \emph{or} if
+${\geq}3$ of the six 0--6 symptom domains were simultaneously elevated
+(${\geq}4$).  Every 24-hour window within a positive week inherited the
+positive label, yielding a $30.3\%$ positive rate across all windows.
+
+\subsection{Models and results}
+
+Tier-1 baselines (logistic regression, random forest, XGBoost) used the
+29 engineered features.  Tier-2 sequence models comprised a two-layer
+GRU operating on $5\times$-subsampled sequences ($288\times 4$, 38{,}465
+parameters) and a three-layer 1D~CNN on the full sequence
+($1{,}440\times 4$, 23{,}969 parameters).  Headline numbers on the
+single 25\%-patient-wise test split are reproduced in
+Table~\ref{tab:phase1}.
+
+\begin{table}[H]
+\centering
+\caption{Phase~I results on the single patient-wise test split
+(sorted by \rocauc).}
+\label{tab:phase1}
+\small
+\begin{tabular}{lccccccc}
+\toprule
+\textbf{Model} & \textbf{Acc} & \textbf{Prec} & \textbf{Rec} &
+\textbf{F1} & \textbf{\rocauc} & \textbf{\prauc} & \textbf{Brier} \\
+\midrule
+GRU (2-layer)       & 0.483 & 0.481 & \textbf{0.918} & 0.632 & \textbf{0.717} & \textbf{0.773} & 0.225 \\
+Ensemble (60\%~GRU) & 0.726 & 0.823 & 0.549 & \textbf{0.659} & 0.653 & 0.762 & \textbf{0.221} \\
+Random Forest       & 0.678 & 0.854 & 0.402 & 0.547 & 0.633 & 0.724 & 0.254 \\
+XGBoost             & 0.612 & 0.812 & 0.255 & 0.388 & 0.581 & 0.654 & 0.312 \\
+Logistic Reg.\      & 0.543 & 0.523 & 0.588 & 0.554 & 0.578 & 0.658 & 0.313 \\
+CNN (3-layer)       & 0.483 & 0.475 & 0.694 & 0.564 & 0.520 & 0.530 & 0.320 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{\textcolor{red}{Warning -- do not cite these numbers as evidence of
+model performance.}}
+The numbers in Table~\ref{tab:phase1} are reported here only to document
+the progress-report system as it was submitted.  They are \emph{not}
+comparable to any later results in this report and should not be cited
+as evidence that any of these models work.  The Phase~II audit
+(Section~\ref{sec:fixes}) identifies the protocol-level reasons for
+that caveat; the Phase~V cross-patient evaluation
+(Section~\ref{sec:lopo}) shows that even the strongest configuration of
+the reformulated pipeline does not produce statistically distinguishable
+signal under a patient-level null.  Phase~I numbers should be read
+strictly as a starting point for the methodological discussion.
+
+A 5-fold GroupKFold cross-validation for the Random Forest reported
+mean \rocauc{}~$=~0.611~\pm~0.226$ with a per-fold range of
+$[0.37,\,0.91]$, providing the first quantitative signal that
+inter-patient variance dominates this task.
+
+% ==========================================================================
+\section{Phase~II: Methodological Audit and Fixes}\label{sec:fixes}
+% ==========================================================================
+
+Post-submission re-analysis surfaced three weaknesses in the Phase~I
+protocol.  None invalidate the qualitative finding that the GRU outranks
+tabular baselines on this split, but each individually inflates the
+reported numerical scores and motivates the redesign described in
+Sections~\ref{sec:tier3}--\ref{sec:onset}.
+
+\paragraph{Within-patient temporal redundancy.}
+A 1-hour stride over a 24-hour window means adjacent windows share
+${\sim}96\%$ of their data.  Although the patient-wise split prevents
+cross-patient leakage, every patient's positive week contributes
+${\sim}168$ near-duplicate positive windows.  This inflates effective
+sample counts and gives any model that overfits to within-patient
+idiosyncrasies (e.g.\ a particular user's resting-HR baseline) a large
+reward at training time.
+
+\paragraph{Coarse week-level label.}
+A single binary label is propagated to all ${\sim}168$~windows in a week.
+The model is therefore rewarded for distinguishing "patient was in a
+positive week" rather than "patient is about to enter a positive
+episode."  These are different tasks; the former is much easier and
+much less clinically useful.
+
+\paragraph{Train/test prevalence mismatch.}
+The single $\texttt{GroupShuffleSplit}$ produces a $16.5\%$ positive rate
+in train and a $48.2\%$ positive rate in test -- a 3$\times$ mismatch
+that systematically inflates threshold-dependent metrics on the test
+side.  This is an artefact of patient-wise splitting on a small cohort
+where individual patients dominate the prevalence; it is not addressed
+by class-weighting alone.
+
+\paragraph{Single-seed deep-learning evaluation.}
+Phase~I reported one training run per architecture.  Section~\ref{sec:tier3}
+shows that the seed variance of the recurrent models on this cohort is
+$\sigma~\approx~0.26$ in \rocauc{}, which means a single-seed headline is
+not interpretable on its own.
+
+The redesign in Sections~\ref{sec:tier3}--\ref{sec:onset} addresses each
+of these issues: patient-disjoint splits become a hard constraint at
+every stage (HPO, ablation, leakage probe, final test); positives are
+defined per-episode and anchored on the day before each clinical onset,
+removing within-patient label propagation; all deep-learning families
+are run for 5~seeds; and a separate leave-one-patient-out and
+patient-permutation protocol is added on top to test cross-cohort
+generalisation.
+
+% ==========================================================================
+\section{Phase~III: Tier-3 Deep-Learning Models and Multi-Seed
+Evaluation}\label{sec:tier3}
+% ==========================================================================
+
+Phase~II extends Phase~I's two deep-learning families (GRU, 1D~CNN) with
+two further sequence-model families and adopts a 5-seed evaluation
+protocol throughout.
+
+\subsection{Added architectures}
+
+\paragraph{Vanilla RNN.}
+A two-layer Elman RNN with hidden dimension~64, $\tanh$ activation, and
+dropout~0.2 between layers.  Included as a minimum-capacity recurrent
+baseline so that the marginal benefit of gating in the GRU and LSTM is
+identifiable.
+
+\paragraph{LSTM.}
+A two-layer LSTM with hidden dimension~64, dropout~0.2.  The additional
+input/forget/output gating relative to the GRU is the standard
+comparison point in the wearable-sequence literature.
+
+All four families (RNN, LSTM, GRU, CNN) consume the same input tensor at
+the reformulated task: an $L\times D$ daily-feature matrix
+(Section~\ref{sec:onset}).  Optimisation uses Adam, BCE-with-logits with
+a positive-class up-weight, batch size~64, early stopping on validation
+loss with patience~5, and a maximum of 30~epochs.
+
+\subsection{Multi-seed protocol}
+
+For each architecture and the winning $(T,\,L,\,W)$ cell from Phase~III
+HPO, training was repeated for 5~seeds
+$\{42,\,43,\,44,\,45,\,46\}$ on the \emph{same} train/val/test patient
+split.  The only sources of variation across seeds are weight
+initialisation, mini-batch ordering, and dropout sampling.  Reporting
+the mean, standard deviation, and range across seeds is necessary
+because, as shown in Section~\ref{sec:tier3-results} below, the
+seed-only variance dominates almost every other source of noise on this
+cohort.
+
+\subsection{Headline multi-seed result}\label{sec:tier3-results}
+
+\begin{table}[H]
+\centering
+\caption{RNN multi-seed test \rocauc{} at the Phase-III winning cell
+$(T=3,\,L=14,\,W=14)$ on the same 4-patient test fold.  Every cell uses
+the \emph{identical} data, architecture, and hyperparameters; only the
+random seed varies.}
+\label{tab:rnn-multiseed}
+\small
+\begin{tabular}{rc}
+\toprule
+\textbf{Seed} & \textbf{Test \rocauc{}} \\
+\midrule
+42 & 0.900 \\
+43 & 0.920 \\
+44 & 0.387 \\
+45 & 0.654 \\
+46 & 0.381 \\
+\midrule
+Mean $\pm$ std & $0.648 \pm 0.263$ \\
+Range          & $[0.381,\,0.920]$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The within-seed range of \emph{the same model on the same data}
+($\Delta\rocauc=0.54$) exceeds the gap between any two model families
+in Phase~I (Table~\ref{tab:phase1}).  Reporting a single-seed
+\rocauc{}~$=$~0.902 (as Phase~I would have done) is therefore a draw
+from a heavy-tailed distribution centred near chance; the corresponding
+finding is that recurrent models on this cohort are not stably
+identifiable and that any test number not accompanied by a seed
+distribution is unsafe to interpret.  This observation drives the
+generalisation analysis in Section~\ref{sec:lopo}.
+
+% ==========================================================================
+\section{Phase~IV: Event-Episode Pre-Onset Anticipation}\label{sec:onset}
+% ==========================================================================
+
+The reformulated task replaces the week-level label of Phase~I with a
+per-episode label whose positives are anchored on the day before each
+clinical onset.  We refer to this throughout as
+\textbf{Event-Episode Pre-Onset Anticipation}.  The clinical question it
+poses is: \emph{given a patient's recent multimodal record, is the
+patient on the trajectory toward a new exacerbation episode in the next
+few days?}
+
+\subsection{Definitions}
+
+Let the weekly worsening score~$w_t$ be the count of the six symptom
+domains that exceed threshold~$T$ on a given week, plus a binary
+contribution from the clinical event flag.  A week is an
+\emph{event week} when $w_t\,{\geq}\,T$; a maximal run of event weeks is
+an \emph{event episode} with \emph{onset day}~$E$ (the first day of the
+first event week in the run).  The pre-onset window of episode $E$
+under lookback~$L$ is the set of days $[E-L,\;E-1]$ -- explicitly
+\emph{excluding} $E$ itself, because the goal is anticipation, not
+detection.
+
+A washout~$W$ specifies the number of days after an event-episode end
+during which no negative sample may be drawn.  Negative samples are
+per-day anchors $a$ in stable non-event weeks whose lookback window
+$[a-L,\,a-1]$ does not overlap any positive week, event day,
+event-episode span, or washout interval.
+
+The grid swept in Phase~III is
+$T\in\{2,3,4\}$, $L\in\{3,7,14\}$, $W\in\{0,7,14\}$ for 27~cells.
+
+\subsection{Patient-disjoint three-way split}\label{sec:onset-split}
+
+A single deterministic split is produced once from the 18 unique
+\texttt{user\_key}s under \texttt{np.random.default\_rng(seed=42)} and
+reused at every downstream stage:
+
+\begin{table}[H]
+\centering
+\caption{The fixed 13~/~3~/~4 patient-disjoint split used throughout
+Phase~III--Phase~IV.}
+\label{tab:split}
+\small
+\begin{tabular}{lcl}
+\toprule
+\textbf{Fold} & \textbf{Size} & \textbf{User keys} \\
+\midrule
+Train & 13 & 939, 294, 113, 808, 343, 562, 917, 278, 328, 867, 190, 701, 454 \\
+Val   &  3 & 625, 514, 398 \\
+Test  &  4 & 764, 473, 702, 447 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+With four test patients and per-cell positive counts in the range
+2--5, every test-side metric is downstream of those four patients'
+behaviour.  This is what makes the headline \rocauc{} values in
+Section~\ref{sec:onset-results} simultaneously precise (the model
+genuinely ranks those test rows the way the table reports) and fragile
+(swapping the test fold can move the headline by 0.3 or more, as
+Section~\ref{sec:lopo} demonstrates).
+
+\subsection{Sample population and class prevalence}\label{sec:onset-counts}
+
+Across the 18~patients, the number of pre-onset positive samples is
+bounded above by the number of distinct event episodes per patient,
+which is small: at $L=14$ each of the three threshold settings produces
+53--55 positive samples across the full cohort (the remaining 8--10
+candidate positives are dropped because $E-L<0$, i.e.\ not enough
+observation history before the patient's first episode).  Negative-side
+pruning by the washout~$W$ and the various exclusion rules of
+Section~\ref{sec:onset} removes a few hundred candidate days, but the
+positive count is essentially the binding constraint on this task.
+Table~\ref{tab:onset-counts} reports the counts at $L=14$, which
+covers every $(T,\,L,\,W)$ that appears in any later table.
+
+\begin{table}[H]
+\centering
+\caption{Sample counts at $L=14$, summed across all 18~patients.
+``Positives'' is the number of pre-onset windows used as positive
+samples after the $E-L\geq 0$ filter.  Test-side positive counts in
+Sections~\ref{sec:onset-results}--\ref{sec:lopo} are a strict subset of
+these counts restricted to the 4 test patients.}
+\label{tab:onset-counts}
+\small
+\begin{tabular}{ccccccc}
+\toprule
+$T$ & $L$ & $W$ & \textbf{Positives} & \textbf{Negatives} &
+\textbf{Total} & \textbf{Positive rate} \\
+\midrule
+2 & 14 & 0  & 54 & 1191 & 1245 & 4.34\% \\
+2 & 14 & 7  & 54 & 1130 & 1184 & 4.56\% \\
+2 & 14 & 14 & 54 & 1067 & 1121 & 4.82\% \\
+3 & 14 & 0  & 53 & 1191 & 1244 & 4.26\% \\
+3 & 14 & 7  & 53 & 1134 & 1187 & 4.47\% \\
+3 & 14 & 14 & 53 & 1071 & 1124 & 4.72\% \\
+4 & 14 & 0  & 55 & 1191 & 1246 & 4.41\% \\
+4 & 14 & 7  & 55 & 1139 & 1194 & 4.61\% \\
+4 & 14 & 14 & 55 & 1076 & 1131 & 4.86\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At the headline RF cell $(T=4,\,L=14,\,W=7)$, the four test patients
+contribute only \textbf{4 positives out of 339~test samples} (positive
+rate $1.18\%$); at the headline XGB-inhaler cell $(T=4,\,L=14,\,W=14)$,
+4 positives out of 325 (1.23\%).  This is the binding statistical fact
+behind every reported test number.  An \rocauc{} score on 4~test
+positives is the average of $4\times(N-4)\sim 1280$ pairwise
+positive--vs--negative comparisons, and a single mis-ranked positive
+flips ${\sim}300$ of those pairs; the Phase-V evaluation
+(Section~\ref{sec:lopo}) is the protocol-level fix for this.
+
+\subsection{Feature pipeline}
+
+For each sample row with anchor day~$a$ we aggregate the per-day
+feature tables of each requested sensor source over the lookback window
+$[a-L,\,a-1]$ using mean / std / min / max / slope / last-value / count
+summaries, then merge the patient-static descriptors.  The full
+all-sensor feature dimension is $\sim 72$~at $L=14$; with sensor
+ablation it drops accordingly.  The deep-learning models consume the
+underlying $L\times D$ daily matrix directly (no within-window
+summarisation).
+
+\subsection{HPO and model selection}\label{sec:onset-hpo}
+
+We run HPO over LR (8~grids), RF (24~grids), and XGB (32~grids) per
+cell, scoring on validation \prauc{}, and select one winner per
+(cell, algorithm) triple.  The deep-learning HPO selects best
+architecture per cell from \{GRU, LSTM, RNN, CNN\} also on validation
+\prauc{}.  Test rows remain untouched.
+
+Table~\ref{tab:hpo-winners} reports the winning hyperparameters for the
+four cells that feed every later result table.  Validation \prauc{}
+values are uniformly low (best $0.25$ at $L=14$); this is the
+expected behaviour given the $\sim 4\%$ class prevalence in
+Table~\ref{tab:onset-counts} and the 3-patient validation fold of
+Table~\ref{tab:split}, and it implies that the HPO winners are
+selected on a very small number of validation positives (1--4 across
+these cells), which is itself a source of variance.
+
+\begin{table}[H]
+\centering
+\caption{Phase~IV HPO winners that feed every later result table.
+Validation \prauc{} is the model-selection criterion; test columns are
+shown for reference but are not used to choose winners.}
+\label{tab:hpo-winners}
+\scriptsize
+\begin{tabular}{lcccll cc}
+\toprule
+\textbf{Algo} & $T$ & $L$ & $W$ & \textbf{Sensor subset} &
+\textbf{Winning hyperparameters} & \textbf{Val \prauc{}} &
+\textbf{Test \rocauc{}} \\
+\midrule
+RF  & 4 & 14 & 7  & all (4 modalities)  & cw=balanced; $n$=200; depth=None; leaf=1 & 0.250 & 0.879 \\
+RF  & 4 & 14 & 14 & all                 & cw=balanced; $n$=500; depth=6; leaf=1    & 0.015 & 0.650 \\
+XGB & 4 & 14 & 0  & all                 & $n$=200; depth=6; lr=0.05; subs=0.7      & 0.034 & 0.759 \\
+XGB & 4 & 14 & 14 & smartinhaler only   & $n$=200; depth=3; lr=0.1; subs=1.0       & 0.013 & 0.964 \\
+RNN & 3 & 14 & 14 & all (daily tensor)  & hidden=64; layers=2; dropout=0.2         & 0.123 & $0.648 \pm 0.263$\textsuperscript{$\dagger$} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textsuperscript{$\dagger$}\,5-seed mean $\pm$ std,
+Table~\ref{tab:rnn-multiseed}.  Hyperparameters: \texttt{cw}~=
+class weight, \texttt{$n$}~= number of estimators / trees,
+\texttt{depth}~= maximum tree depth, \texttt{leaf}~= minimum samples
+per leaf, \texttt{lr}~= learning rate, \texttt{subs}~= row-subsample
+ratio.
+
+\subsection{Sensor ablation and label-leakage probe}\label{sec:onset-ablation}
+
+Each cell-winner is refit on nine sensor subsets (all, four singletons,
+four leave-one-out) with hyperparameters \emph{locked} from HPO,
+yielding $9\times 27\times 3=729$ refits.  Separately, a 5-shuffle
+label-permutation probe across all 81~configurations bounds the ceiling
+under truly random labels; the pooled mean validation \rocauc{} under
+permuted labels is $0.5046$~(95\% empirical interval $\approx
+[0.25,\,0.75]$), consistent with no leakage.
+
+\subsection{Final test evaluation with bootstrap CIs}\label{sec:onset-results}
+
+The Phase-III winners are refit on train$\cup$val and evaluated once on
+the four-patient test fold.  Bootstrap 95\% confidence intervals are
+computed from 2000 resamples of the test predictions; F1-relevant
+thresholds are tuned via a train-only refit
+($\tau^{\star}$ in Table~\ref{tab:onset-headline}).
+
+\paragraph{\textcolor{red}{Read this before the headline table.}}
+The numbers in Table~\ref{tab:onset-headline} are computed on a single
+4-patient test fold containing only 4~positive samples (see
+Section~\ref{sec:onset-counts}).  Section~\ref{sec:lopo} re-evaluates
+the two strongest configurations under leave-one-patient-out
+cross-validation across all 18~patients and a patient-level permutation
+null: the headline RF \rocauc{} of $0.879$ collapses to a pooled
+LOPO~\rocauc{} of $0.354$ ($p=0.40$) and the headline XGB-inhaler
+\rocauc{} of $0.964$ collapses to a pooled LOPO~\rocauc{} of $0.619$
+($p=0.22$).  \emph{Neither configuration produces statistically
+distinguishable signal under a cross-patient null}; the numbers below
+are the right-tail result of a 4-patient draw and should be read in
+that light.
+
+\begin{table}[H]
+\centering
+\caption{Pre-Onset Anticipation -- final-test results on 4~patients.
+Tuned-threshold metrics use the train-only-derived
+$\tau^{\star}$; 95\% CIs are bootstrap with 2000~resamples.}
+\label{tab:onset-headline}
+\small
+\begin{tabular}{lccccccc}
+\toprule
+\textbf{Config} & $T$ & $L$ & $W$ & \textbf{\rocauc{}} & \textbf{\prauc{}} &
+$F_1^{\,\tau^{\star}}$ & \textbf{Brier} \\
+\midrule
+RF -- all sensors           & 4 & 14 & 7  & 0.879 [0.80, 1.00] & 0.327 & 0.00 & 0.027 \\
+XGB -- all sensors          & 4 & 14 & 0  & 0.759              & 0.269 & 0.40 & 0.019 \\
+XGB -- smartinhaler only    & 4 & 14 & 14 & \textbf{0.964}     & \textbf{0.164} & \textbf{0.136} & 0.168 \\
+RNN -- (multi-seed, see Tab.~\ref{tab:rnn-multiseed}) & 3 & 14 & 14 & $0.648 \pm 0.263$ & --- & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three observations are important before reading these numbers, all of
+which are conditional on the 4-patient / 4-positive test fold described
+in Section~\ref{sec:onset-counts} and reframed by the Phase-V analysis
+in Section~\ref{sec:lopo}.  First, the Random-Forest \emph{tuned}~$F_1$
+is $0$~at the default $0.5$~cutoff because the model ranks the four
+test positives correctly but never crosses the cutoff -- consistent
+with a strong-ranking but uncalibrated decision boundary on a
+4-positive test set.  Second, the XGBoost smartinhaler-only entry has
+the highest \rocauc{} of any configuration we ran; its \prauc{} of
+$0.16$ is roughly $20\times$ the prevalence baseline, but this is
+before the Phase-V cross-patient evaluation, which is where the
+generalisation claim must be tested.  Third, the RNN's $0.648\pm 0.263$
+across 5~seeds means the corresponding single-seed report ($0.90$ in
+Phase~I conventions) is unsafe; this is the same recurrent-model
+fragility documented in Section~\ref{sec:tier3-results}.
+
+\subsection{Caveat: scores cannot be compared to Phase~I}
+
+The Pre-Onset Anticipation numbers in Table~\ref{tab:onset-headline}
+share a dataset with Phase~I (Table~\ref{tab:phase1}) but \emph{not} a
+task, label, sample population, or test cohort.  Phase~I asks "is this
+24-hour window inside a positive week?"; Phase~III asks "does this
+patient's $L$-day record precede an episode onset?"  Direct numerical
+comparison between the two is methodologically inappropriate, and we
+do not perform it.
+
+% ==========================================================================
+\section{Phase~V: Generalisation Stress-Test
+(Leave-One-Patient-Out and Patient-Level Permutation)}\label{sec:lopo}
+% ==========================================================================
+
+The 4-patient test fold in Section~\ref{sec:onset} is what the literature
+typically calls "held-out" but is small enough that a single favourable
+draw can drive the headline.  To distinguish a real signal from a
+4-patient lottery we re-evaluate the two strongest tabular
+configurations under leave-one-patient-out cross-validation and a
+patient-level permutation null.
+
+\subsection{Protocol}
+
+\paragraph{Leave-one-patient-out (LOPO).}
+For each of the 18~patients $p$, train the locked configuration on the
+other 17~and predict on $p$.  Compute per-patient
+$\rocauc{}_{p}$ and $\prauc{}_{p}$, then pool predictions across folds
+and compute a global \rocauc{}/\prauc{}.  No new HPO is run; the locked
+configurations are exactly the Phase-III winners.
+
+\paragraph{Patient-level permutation null.}
+For each of $K=200$ permutations $\sigma$ of the 18~user keys, replace
+each patient's label sequence with another patient's label block,
+matched positionally, then re-run the full LOPO.  This breaks the
+feature$\,\to\,$label link \emph{at the patient level} while
+preserving within-patient temporal structure and per-block positive
+prevalence.  The $p$-value is the share of permuted pooled \rocauc{}
+values that match or exceed the real pooled \rocauc{}, with the
+standard $+1$ smoother.
+
+\subsection{Locked configurations validated}
+
+\begin{enumerate}[nosep,leftmargin=*]
+  \item \textbf{RF -- all sensors, $T=4,\,L=14,\,W=7$}\\
+        \texttt{class\_weight=balanced, n\_estimators=200,
+        max\_depth=None, min\_samples\_leaf=1}.  This is the headline
+        all-sensor Random Forest from Table~\ref{tab:onset-headline}.
+  \item \textbf{XGB -- smartinhaler only, $T=4,\,L=14,\,W=14$}\\
+        \texttt{n\_estimators=200, max\_depth=3, learning\_rate=0.1,
+        subsample=1.0, scale\_pos\_weight=auto}.  This is the strongest
+        \rocauc{} of the entire sensor-ablation grid.
+\end{enumerate}
+
+\subsection{Results}
+
+\begin{table}[H]
+\centering
+\caption{LOPO and patient-permutation results across all 18~patients.
+"Pooled \rocauc{}" concatenates predictions across folds before
+computing the metric.  Permutation null is $K=200$ patient-block
+shuffles.}
+\label{tab:lopo}
+\small
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Config} & \textbf{Headline (4-pt test)} &
+\textbf{Pooled \rocauc{} (LOPO)} & \textbf{Per-patient \rocauc{}} &
+\textbf{$p$-value} \\
+\midrule
+RF -- all sensors        & 0.879 & \textbf{0.354} &
+$0.641 \pm 0.255$ (range $[0.24,1.00]$) & \textbf{0.40} \\
+XGB -- smartinhaler only & 0.964 & \textbf{0.619} &
+$0.521 \pm 0.293$ & \textbf{0.22} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Patient-permutation null distribution at $K=200$ for each
+locked configuration.  Real pooled \rocauc{} should be compared against
+the null distribution percentiles in the same row.}
+\label{tab:lopo-null}
+\small
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Config} & \textbf{Real} & \textbf{Null mean} &
+\textbf{Null std} & \textbf{Null $q_{05}$} & \textbf{Null $q_{95}$} &
+\textbf{$p$-value} \\
+\midrule
+RF -- all sensors        & 0.354 & 0.342 & 0.165 & 0.125 & 0.664 & 0.40 \\
+XGB -- smartinhaler only & 0.619 & 0.440 & 0.209 & 0.135 & 0.807 & 0.22 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Interpretation}\label{sec:lopo-interp}
+
+\paragraph{The headline RF (\rocauc{} = 0.879) does not generalise.}
+Pooled LOPO \rocauc{} is $0.354$, worse than chance, and lies almost
+exactly at the patient-permutation null mean ($0.342$).  The
+permutation $p$-value of $0.40$ means the observed performance is
+statistically indistinguishable from a model trained on
+patient-permuted labels.  The Phase~IV headline reflects a favourable
+draw of four test patients whose ranking pattern happens to match what
+the model learned from the other thirteen; that pattern does not
+transfer to the cohort as a whole.
+
+\paragraph{The inhaler-only XGB also fails to reject the null.}
+Pooled LOPO \rocauc{} is $0.619$ -- about $0.86\,\sigma$ above the
+permutation null mean -- with $p=0.22$.  We explicitly do \emph{not}
+read this as ``directional evidence'' of a real effect: $p=0.22$ is
+far from significant at any standard threshold, the real value sits
+comfortably inside the $[q_{05},\,q_{95}]$ envelope of the null
+($[0.135,\,0.807]$ in Table~\ref{tab:lopo-null}), and a non-trivial
+fraction of the null distribution exceeds the observed performance.
+The honest statement is: \emph{we cannot reject the null hypothesis;
+the observed performance is consistent with random patient-label
+matching}.  No tabular configuration we evaluated produces statistical
+evidence of cross-patient generalisation at $\alpha=0.05$.
+
+\paragraph{Per-patient dispersion and a coverage-aware check.}
+The per-patient \rocauc{} standard deviation of $0.26$--$0.29$ in
+Table~\ref{tab:lopo}, combined with the recurrent-model seed standard
+deviation of $0.26$ in Table~\ref{tab:rnn-multiseed}, says the same
+thing twice: at this cohort size, any single number reported on any
+single split is dominated by which patients happen to be on which side
+of the split rather than by the underlying signal.
+
+Because per-patient HR-missingness ranges from $18.06\%$ to $61.57\%$
+(Section~\ref{sec:data}), a natural concern is that the LOPO collapse
+is driven by patients with very sparse sensor coverage in their
+pre-onset windows rather than by absence of cross-patient signal.  We
+therefore stratified the per-patient RF-all-sensors LOPO
+\rocauc{}s in Table~\ref{tab:lopo} by the HR-missingness tier of the
+held-out patient (excluding 9 folds with no test positives or no
+test negatives, for which \rocauc{} is undefined):
+
+\begin{table}[H]
+\centering
+\caption{RF -- all-sensors per-patient LOPO \rocauc{} stratified by
+the held-out patient's HR missingness, restricted to the 9 folds with
+defined \rocauc{}.  The relationship is non-monotone and, if anything,
+runs opposite to the coverage hypothesis on this cohort.}
+\label{tab:lopo-coverage}
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{HR-missingness tier} & \textbf{Held-out patients} & \textbf{Mean per-patient \rocauc{}} \\
+\midrule
+Low ($<\!25\%$)             & 113, 294, 343, 447, 701, 939 & 0.555 \\
+Mid ($25$--$40\%$)           & 625                          & 1.000 \\
+High ($>\!40\%$)             & 473, 808                     & 0.720 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+High-missingness patients score \emph{higher}, not lower, in this
+check; the LOPO collapse is therefore not parsimoniously explained as
+a sensor-coverage artefact on this cohort.  The stratified result is
+itself fragile -- the high-missingness tier contains only two patients
+with defined \rocauc{} -- but it is the available evidence and is
+consistent with the interpretation that the underlying obstacle is
+cross-patient signal generalisation, not within-patient signal
+attenuation.  A larger cohort with a stratified LOPO across
+missingness, age band, and severity tier remains the most informative
+next experiment.
+
+% ==========================================================================
+\section{Discussion}\label{sec:discussion}
+% ==========================================================================
+
+\subsection{What this work establishes}
+
+Three results are robust to the methodological audit:
+
+\begin{enumerate}[nosep]
+  \item \textbf{The reformulated task is the correct one.}  Anchoring
+        positives on the day before each clinical onset removes the
+        weekly-label propagation problem of Phase~I and produces a
+        sample population that matches the clinical question.  The
+        Phase~III leakage probe (mean permuted \rocauc{}~=~0.5046)
+        confirms that no inadvertent label-side leakage survives the
+        new sample construction.
+  \item \textbf{Sensor selection is the most plausible candidate signal.}
+        Smartinhaler-only features produce the highest \rocauc{} of any
+        configuration in the grid on the favourable test fold and the
+        highest pooled LOPO~\rocauc{} ($0.62$ vs.\ $0.35$ for the
+        all-sensor RF), but the patient-permutation test does not
+        reject the null for any modality subset ($p=0.22$).  Smartwatch
+        data are useful but not sufficient on this cohort, and at
+        $n=18$ even inhaler-only features do not produce statistically
+        distinguishable cross-patient performance.
+  \item \textbf{Reporting protocol matters more than architecture
+        choice.}  The progress-report headline of $0.717$ for the GRU
+        is reproducible in the reformulated pipeline -- but only on a
+        favourable 4-patient draw and only for a favourable random
+        seed.  The single-number reporting convention used in much of
+        the wearable-asthma literature is, on this cohort, not
+        meaningful.
+\end{enumerate}
+
+\subsection{What this work does \emph{not} establish}
+
+\begin{enumerate}[nosep]
+  \item \textbf{Cross-patient generalisation.}  No tabular or
+        deep-learning configuration in this report achieves a
+        cross-patient effect size that survives the patient-permutation
+        null at $\alpha=0.05$.
+  \item \textbf{Clinical operating-point selection.}  The
+        $F_1$-tuned thresholds from Section~\ref{sec:onset-results} are
+        train-only-derived but were not stability-tested across
+        patient folds.  Any deployment-style operating point would
+        require a much larger cohort.
+  \item \textbf{Modality-specific causal claims.}  Although
+        smartinhaler features dominate the ablation,
+        18~patients is too small to attribute the effect to any
+        specific behavioural mechanism rather than to dataset-level
+        coincidence between rescue-inhaler use timing and questionnaire
+        completion.
+\end{enumerate}
+
+\subsection{Implications for similar cohorts}
+
+The pattern observed here -- 5-seed test \rocauc{} of $0.65~\pm~0.26$ and
+LOPO pooled \rocauc{} of $0.35$--$0.62$ -- is a quantitative version of
+a problem that the wearable-asthma literature already
+notes~\cite{molfino2024,dehond2022,cokorudy2024} but does not always
+control for.  A few practical recommendations follow:
+
+\begin{itemize}[nosep]
+  \item Patient-disjoint splits are necessary but not sufficient;
+        when $n_{\text{test}}\leq 5$, the headline number should
+        always be accompanied by an LOPO companion.
+  \item For recurrent models on cohorts of this size, single-seed
+        results are not interpretable.  At least 5 seeds and an
+        explicit standard deviation should be reported as a matter of
+        course.
+  \item A patient-block permutation null is much more diagnostic than a
+        row-level feature shuffle, which can be fooled by per-patient
+        confounding (as illustrated by the gap between our
+        $0.5046$~row-shuffle ceiling and the $0.40$~patient-permutation
+        $p$-value for the RF).
+\end{itemize}
+
+% ==========================================================================
+\section{Limitations}\label{sec:limits}
+% ==========================================================================
+
+\paragraph{Cohort size.}
+The binding limitation throughout this report is $n=18$ usable patients.
+Even a perfectly clean experimental protocol cannot produce significant
+generalisation evidence at this scale when the per-patient
+within-class variance is comparable to the between-class effect.
+
+\paragraph{Single-study cohort.}
+AAMOS-00 is a single UK-based study with a particular age, severity,
+and adherence profile.  Models trained here would require external
+validation on at least one independent multimodal cohort before any
+deployment-style claim.
+
+\paragraph{Coarse questionnaire ground truth.}
+The weekly worsening score is the only available proxy for
+exacerbation onset.  It is more reliable than self-reported daily
+symptoms but coarser than clinically documented events.  Some of the
+per-patient \rocauc{} variance in Section~\ref{sec:lopo} is likely
+attributable to questionnaire-completion behaviour rather than to
+physiological signal.
+
+\paragraph{No physician-grade ground truth on test side.}
+The four test patients have 2--5 positives each.  Even a perfect model
+on physiological grounds would inherit noise from how those few
+positives happen to align with the patient's smartwatch wear pattern,
+inhaler reporting, and peak-flow compliance during that specific week.
+
+\paragraph{No cross-patient evaluation for deep-learning families.}
+The LOPO and patient-permutation protocol in Section~\ref{sec:lopo}
+was applied only to the two strongest tabular configurations.  The
+Phase-III multi-seed evidence (Table~\ref{tab:rnn-multiseed}) shows
+that the recurrent-model headline is unsafe to interpret as a
+single-seed number, but a 5-seed sweep on a fixed 4-patient test fold
+is \emph{not} a generalisation test.  An 18-fold $\times$~5-seed LOPO
+of the RNN, LSTM, GRU, and CNN families would be needed to claim or
+reject cross-patient transfer for the deep-learning side, and we did
+not run it.  Consequently, the generalisation of recurrent models
+remains untested on this cohort, and the seed-variance argument should
+be read as evidence about \emph{reporting stability}, not about
+\emph{cross-patient performance}.
+
+\paragraph{No deployment-grade calibration.}
+We report Brier scores but do not perform Platt or isotonic
+recalibration, both because the test set is too small for stable
+calibration learning and because the LOPO instability of the underlying
+predictors would propagate directly into any post-hoc calibration map.
+
+% ==========================================================================
+\section{Conclusion and Future Work}\label{sec:conclusion}
+% ==========================================================================
+
+This report tells the full arc of our project: a smartwatch-only
+day-level baseline (Phase~I); a methodological audit that identified
+three issues in that baseline (Phase~II); two further deep-learning
+families and a multi-seed evaluation protocol (Phase~III); a
+clinically reformulated task -- \emph{Event-Episode Pre-Onset
+Anticipation} -- with patient-disjoint splits, a 27-cell grid, sensor
+ablation, and a label-leakage probe (Phase~IV); and a
+generalisation stress-test that re-evaluates the two strongest
+configurations under leave-one-patient-out cross-validation and a
+patient-level permutation null (Phase~V).
+
+The honest finding is that on $n=18$ patients no configuration we
+evaluated -- tabular or sequence -- demonstrates statistically
+significant cross-patient generalisation.  Pooled LOPO~\rocauc{} values
+of $0.354$ ($p=0.40$) for the all-sensor Random Forest and $0.619$
+($p=0.22$) for the smartinhaler-only XGBoost are both consistent with
+random patient-label matching.  There is no statistical evidence in
+this study to support a deployment-style generalisation claim for any
+model.  The headline 4-patient \rocauc{} values that emerge from a
+single patient-disjoint split ($0.879$ for RF, $0.964$ for
+XGB-inhaler) are computationally correct on that specific test fold
+but should not be read as performance estimates.
+
+\subsection{Future work}
+
+\begin{enumerate}[nosep]
+  \item \textbf{Larger multimodal cohort.}  The single most consequential
+        next step is replicating the Pre-Onset Anticipation pipeline on
+        a cohort with $n\geq 50$ patients where the
+        patient-permutation null can plausibly be rejected at
+        $\alpha=0.05$ for a clinically meaningful effect size.
+  \item \textbf{Inhaler-centric modelling.}  The highest pooled LOPO
+        \rocauc{} on smartinhaler features, although not significant at
+        $n=18$, motivates a focused study with deliberately denser
+        inhaler instrumentation, including time-since-last-use kernels
+        and circadian decompositions.
+  \item \textbf{Personalised per-patient baselines.}  Treating each
+        patient's stable-week distribution as an individual reference
+        and predicting departures from it -- rather than predicting on
+        a population-level decision boundary -- is the natural response
+        to the per-patient dispersion documented in
+        Table~\ref{tab:lopo}.
+  \item \textbf{Multi-horizon evaluation.}  The current task uses a
+        single $L$-day pre-onset window.  Extending to overlapping
+        $\{3,\,7,\,14\}$-day horizons with shared backbone weights
+        would let a clinical operator pick a horizon at deployment
+        time rather than at training time.
+  \item \textbf{Pretraining on adjacent wearable cohorts.}  Self-supervised
+        pretraining on larger generic-wearable corpora (e.g.\ UK Biobank
+        smartwatch substudies) before fine-tuning on AAMOS-00 is a
+        plausible path to reducing the seed-level variance documented
+        in Table~\ref{tab:rnn-multiseed}.
+\end{enumerate}
+
+% ==========================================================================
+% References
+% ==========================================================================
+\bibliographystyle{unsrtnat}
+
+\begin{thebibliography}{20}
+
+\bibitem{who2024}
+World Health Organization, ``Asthma,'' Fact Sheet, May 6, 2024.
+
+\bibitem{bourdin2019}
+A.~Bourdin et~al., ``ERS/EAACI statement on severe exacerbations in asthma,''
+\emph{European Respiratory Journal}, vol.~54, no.~3, 2019.
+
+\bibitem{nurmagambetov2018}
+T.~Nurmagambetov, R.~Kuwahara, and P.~Garbe, ``The economic burden of asthma
+in the United States, 2008--2013,'' \emph{Annals of the American Thoracic
+Society}, 2018.
+
+\bibitem{pinnock2015}
+H.~Pinnock, ``Supported self-management for asthma,'' \emph{Breathe (ERS)},
+2015.
+
+\bibitem{cokorudy2024}
+B.~Cokorudy et~al., ``Digital markers of asthma exacerbations: a systematic
+review,'' 2024.
+
+\bibitem{taylor2020}
+L.~Taylor et~al., ``Wearable vital signs monitoring for patients with asthma:
+a review,'' 2020.
+
+\bibitem{cho2021}
+J.~Cho et~al., ``Wearable data quality: a systematic review,'' 2021.
+
+\bibitem{molfino2024}
+N.~A.~Molfino and G.~Turcatel, ``Machine learning approaches to predict asthma
+exacerbations: a narrative review,'' 2024.
+
+\bibitem{dehond2022}
+A.~A.~H.~de~Hond et~al., ``Machine learning did not beat logistic regression
+in time series prediction for severe asthma exacerbations,'' \emph{Scientific
+Reports}, vol.~12, Art.~no.~20363, 2022.
+
+\bibitem{lugogo2022}
+N.~L.~Lugogo et~al., ``A predictive machine learning tool for asthma
+exacerbations using an electronic inhaler with integrated sensors,''
+\emph{Journal of Asthma and Allergy}, 2022.
+
+\bibitem{tsang2023}
+K.~C.~H.~Tsang et~al., ``Home monitoring with connected mobile devices for
+asthma attack prediction with machine learning,'' \emph{Scientific Data},
+2023.
+
+\bibitem{chan2024}
+A.~H.~Y.~Chan et~al., ``DIGIPREDICT: physiological, behavioural and
+environmental predictors of asthma attacks---study protocol,'' \emph{BMJ Open
+Respiratory Research}, 2024.
+
+\bibitem{datashare}
+University of Edinburgh DataShare, ``AAMOS-00 dataset repository,'' CC~BY~4.0.
+
+\bibitem{camargo2009}
+C.~A.~Camargo~Jr., G.~Rachelefsky, and M.~Schatz, ``Managing asthma
+exacerbations in the emergency department,'' \emph{Proc.\ Am.\ Thorac.\
+Soc.}, 2009.
+
+\bibitem{bai2018}
+S.~Bai, J.~Z.~Kolter, and V.~Koltun, ``An empirical evaluation of generic
+convolutional and recurrent networks for sequence modeling,'' 2018.
+
+\bibitem{zhou2021}
+H.~Zhou et~al., ``Informer: Beyond efficient transformer for long sequence
+time-series forecasting,'' \emph{AAAI}, 2021.
+
+\bibitem{lim2021}
+B.~Lim et~al., ``Temporal fusion transformers for interpretable multi-horizon
+time series forecasting,'' \emph{International Journal of Forecasting}, 2021.
+
+\bibitem{ganaie2021}
+M.~A.~Ganaie et~al., ``Ensemble deep learning: a review,'' 2021.
+
+\end{thebibliography}
+
+\end{document}

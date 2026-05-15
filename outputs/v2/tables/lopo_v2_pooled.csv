@@ -1,0 +1,3 @@
+pooled_roc_auc,pooled_pr_auc,pooled_n,pooled_n_pos,per_patient_roc_mean,per_patient_roc_std,per_patient_roc_min,per_patient_roc_max,n_folds_with_pos,n_folds_total,config,elapsed_sec
+0.35442573230106156,0.0365330211152747,1194,55,0.6410257651297752,0.254786483955031,0.2398989898989899,1.0,10,18,rf_all_T4_L14_W7,6.4
+0.6194068942210206,0.06740652539080957,1131,55,0.5214687855813523,0.2932981642338099,0.0,0.9744897959183673,10,18,xgb_smartinhaler_T4_L14_W14,2.5

@@ -1,0 +1,20 @@
+\begin{table}[t]
+\centering
+\small
+\caption{Top-3 sensor subsets per tabular algorithm, ranked by validation PR-AUC.  All metrics shown.}\label{tab:v2_ablation_topk}
+\begin{tabular}{llccccccc}
+\toprule
+Algo & Subset & $(T,L,W)$ & Val PR & Val ROC & Val F1 & Test PR & Test ROC & Test F1 \\
+\midrule
+LR & smartinhaler\_only & (3,14,0) & 0.036 & 0.891 & 0.069 & 0.018 & 0.596 & 0.040 \\
+LR & smartinhaler\_only & (4,14,0) & 0.036 & 0.891 & 0.069 & 0.024 & 0.671 & 0.033 \\
+LR & smartinhaler\_only & (2,14,0) & 0.036 & 0.891 & 0.069 & 0.008 & 0.465 & 0.000 \\
+RF & no\_smartinhaler & (3,14,7) & 1.000 & 1.000 & 0.400 & 0.012 & 0.396 & 0.000 \\
+RF & all & (4,14,7) & 0.250 & 0.989 & 0.000 & 0.031 & 0.664 & 0.000 \\
+RF & all & (3,14,0) & 0.250 & 0.984 & 0.000 & 0.011 & 0.374 & 0.000 \\
+XGB & smartinhaler\_only & (4,14,14) & 0.067 & 0.962 & 0.111 & 0.164 & 0.964 & 0.136 \\
+XGB & smartinhaler\_only & (2,14,7) & 0.056 & 0.945 & 0.000 & 0.014 & 0.696 & 0.000 \\
+XGB & smartinhaler\_only & (4,14,7) & 0.053 & 0.940 & 0.000 & 0.059 & 0.746 & 0.061 \\
+\bottomrule
+\end{tabular}
+\end{table}
